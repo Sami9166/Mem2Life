@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- DAT SDK: 글래스 등록/세션/카메라 스트림에 필요 -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 글래스 마이크(HFP) 오디오 캡처용 — DAT SDK 범위 밖, 표준 Android
+         Bluetooth SCO API로 접근한다 (com.mem2life.companion.audio.BluetoothScoAudioSource 참고) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+
+    <!-- 세션 녹화 중 포그라운드 서비스로 청크 업로드/오디오 스트리밍을 유지 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+    <application
+        android:name=".Mem2LifeApplication"
+        android:allowBackup="false"
+        android:icon="@drawable/ic_mem2life"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Mem2LifeCompanion">
+
+        <!-- Meta Wearables Device Access Toolkit 설정.
+             Developer Mode에서는 두 값 모두 0으로 둔다. 프로덕션 배포 시
+             Wearables Developer Center에서 발급받은 값으로 교체한다
+             (app/build.gradle.kts의 manifestPlaceholders 참고, 하드코딩 아님). -->
+        <meta-data
+            android:name="com.meta.wearable.mwdat.APPLICATION_ID"
+            android:value="${mwdat_application_id}" />
+        <meta-data
+            android:name="com.meta.wearable.mwdat.CLIENT_TOKEN"
+            android:value="${mwdat_client_token}" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Mem2LifeCompanion">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Meta AI 앱이 등록/권한 흐름 완료 후 되돌아올 콜백 URI.
+                 실제 배포 시 앱 고유 scheme으로 교체할 것. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="mem2life" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".recording.RecordingForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+    </application>
+</manifest>

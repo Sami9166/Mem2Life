@@ -1,0 +1,42 @@
+# --- 영상/오디오 원본 (용량·사생활 — 커밋 금지) ---
+backend/testdata/*
+!backend/testdata/.gitkeep
+# recall 회귀 테스트용 모의 Obsidian 볼트(손으로 작성한 텍스트 fixture,
+# 실제 촬영 영상이 아님)는 커밋 대상 — 위 용량/사생활 이유가 적용되지 않는다.
+# (아래 "vault/" 규칙과 이름이 겹치지 않도록 일부러 mock_vault로 명명했다.)
+!backend/testdata/mock_vault/
+*.mp4
+*.mov
+*.wav
+*.m4a
+
+# --- Obsidian 볼트 (데모용 로컬 데이터, 실행 결과물) ---
+# 반드시 루트 앵커(/)를 붙인다 — 앵커 없는 "vault/"는 backend/recall/vault/
+# (검색 파이프라인의 소스 코드 패키지, 커밋 대상)까지 매칭해버려 ruff가
+# 그 패키지 전체를 조용히 lint 대상에서 빼먹는 사고가 있었다.
+/vault/
+
+# --- 비밀 정보 ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- 가상환경 / uv ---
+.venv/
+venv/
+env/
+
+# --- OS / 에디터 ---
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Mem2Life</string>
+    <string name="recording_notification_channel">Mem2Life 녹화</string>
+    <string name="recording_notification_title">Mem2Life 녹화 중</string>
+    <string name="recording_notification_text">영상 청크 업로드 및 오디오 스트리밍 진행 중</string>
+</resources>

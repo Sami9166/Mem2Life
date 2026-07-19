@@ -1,0 +1,18 @@
+*.iml
+.gradle/
+/local.properties
+.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+
+# 목업 백엔드 실행 산출물
+tools/mock-backend/.venv/
+tools/mock-backend/data/
+tools/mock-backend/__pycache__/
+tools/mock-backend/**/__pycache__/
+tools/mock-backend/.pytest_cache/
