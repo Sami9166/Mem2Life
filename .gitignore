@@ -15,6 +15,7 @@ backend/testdata/*
 # (검색 파이프라인의 소스 코드 패키지, 커밋 대상)까지 매칭해버려 ruff가
 # 그 패키지 전체를 조용히 lint 대상에서 빼먹는 사고가 있었다.
 /vault/
+/data/
 
 # --- 비밀 정보 ---
 .env
@@ -35,6 +36,11 @@ htmlcov/
 .venv/
 venv/
 env/
+
+# --- Project-local PostgreSQL runtime/data ---
+.postgres-runtime/
+.postgres-data/
+.postgres.log
 
 # --- OS / 에디터 ---
 .DS_Store

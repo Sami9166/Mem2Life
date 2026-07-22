@@ -5,7 +5,7 @@ coarse-to-fine 검색". 3단계로 구현한다:
 
 1. **daily(coarse)**: 질문의 날짜 힌트(`date_hints.py`)로 후보를 좁히거나,
    힌트가 없으면 daily 요약 전체를 하이브리드 검색해 관련 날짜를 추론한다.
-2. **session(middle)**: 좁혀진 날짜(있다면) 안에서 세션 요약/주요 순간과
+2. **session(middle)**: 좁혀진 날짜(있다면) 안에서 세션 요약과
    people/topics 엔티티 페이지를 하이브리드 검색해 관련 세션을 고른다.
 3. **transcript/caption(fine)**: 고른 세션의 전사록/장면 캡션 줄 단위
    청크를 하이브리드 검색해 타임스탬프가 붙은 세부 근거를 뽑는다.
@@ -33,7 +33,7 @@ class RetrievalResult:
     resolved_date: date_type | None  # 질문 문구에서 직접 해석된 날짜(있으면)
     narrowed_dates: frozenset[date_type]  # 실제로 좁혀진 날짜 집합(daily 검색 결과 기반)
     daily_evidence: list[Evidence]
-    session_evidence: list[Evidence]  # 세션 요약/주요 순간 (타임스탬프 있음)
+    session_evidence: list[Evidence]  # 세션 요약
     entity_evidence: list[Evidence]  # people/topics 페이지 (라우팅 보조 신호)
     fine_evidence: list[Evidence]
     chosen_sessions: tuple[Path, ...]
@@ -87,17 +87,13 @@ def coarse_to_fine_search(
         )
 
     # ------------------------------------------------------------------
-    # 2단계: session(middle) — 세션 요약/주요 순간 + 엔티티 페이지
+    # 2단계: session(middle) — 세션 요약 + 엔티티 페이지
     # ------------------------------------------------------------------
     # 두 풀을 따로 검색한다(합쳐서 한 번에 top_k를 자르지 않는다): people/topics
-    # 페이지는 세션 로그를 산문으로 재서술한 것이라 BM25/벡터 점수가 종종
-    # 짧은 "주요 순간" 불릿보다 높게 나온다. 하나의 후보 풀로 합쳐 top_k를
-    # 자르면 정작 타임스탬프가 붙은 세션 근거가 밀려날 수 있으므로, 세션
-    # 레벨 근거와 엔티티 근거를 독립적으로 top_k개씩 확보한다.
+    # 페이지는 세션 로그를 산문으로 재서술한 것이라 세션 요약과 별개로
+    # 라우팅 신호를 제공한다. 두 종류를 독립적으로 top_k개씩 확보한다.
     date_filter = narrowed_dates if narrowed_dates else None
-    session_level_idx = index.indices_for(
-        levels={ChunkLevel.SESSION_SUMMARY, ChunkLevel.HIGHLIGHT}, dates=date_filter
-    )
+    session_level_idx = index.indices_for(levels={ChunkLevel.SESSION_SUMMARY}, dates=date_filter)
     entity_idx = index.indices_for(levels={ChunkLevel.ENTITY})
 
     session_evidence = index.search(question, indices=session_level_idx, top_k=top_k_session)
@@ -131,9 +127,7 @@ def coarse_to_fine_search(
     # 최종 답변·인용 근거는 타임스탬프가 붙는 daily/세션/전사록/캡션을 항상
     # 먼저 채우고, people/topics(엔티티) 근거는 남는 자리만 보조로 채운다.
     # 점수만으로 한 번에 정렬해 자르면 엔티티 산문(시각 정보 없음)이 종종
-    # 짧은 "주요 순간" 불릿보다 근소하게 높은 점수를 받아 타임스탬프 있는
-    # 근거를 밀어낼 수 있다 — "모든 답변에 근거 타임스탬프 포함" 원칙을
-    # 지키려면 엔티티는 항상 보조 역할이어야 한다.
+    # 세션·전사록·캡션 근거를 밀어낼 수 있으므로 엔티티는 보조 역할로 둔다.
     timestamped_pool = _dedup_by_chunk_id(daily_evidence + session_evidence + fine_evidence)
     combined = list(timestamped_pool[:combined_top_k])
     if len(combined) < combined_top_k:

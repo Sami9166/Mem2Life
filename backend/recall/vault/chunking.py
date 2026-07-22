@@ -5,7 +5,6 @@ EgoRAG coarse-to-fine 층위(기술조사_의사결정.md 조사 6)에 맞춰 �
 
     daily/*.md      → ChunkLevel.DAILY        (1개, "## 요약" 섹션 전체)
     sessions/*.md   → ChunkLevel.SESSION_SUMMARY (1개, "## 요약")
-                    → ChunkLevel.HIGHLIGHT       (줄 단위, "## 주요 순간")
                     → ChunkLevel.TRANSCRIPT      (줄 단위, "## 전사록")
                     → ChunkLevel.SCENE_CAPTION   (줄 단위, "## 장면 캡션")
     people/*.md     → ChunkLevel.ENTITY        (섹션 단위)
@@ -80,6 +79,18 @@ def _parse_session_start_sec(time_range: str | None) -> float | None:
         return None
 
 
+def _to_video_offset(timestamp_sec: float, session_start_sec: float | None) -> float:
+    """Markdown 타임스탬프를 영상 시작 기준 초로 통일한다.
+
+    기존 손작성 볼트는 ``[15:00:20]`` 같은 실제 시각을, ingest가 만드는
+    Markdown은 ``[00:00:20]`` 같은 영상 기준 시각을 사용한다. 세션 시작보다
+    이른 값은 영상 기준으로 보고 그대로 두면 두 형식을 모두 안전하게 읽는다.
+    """
+    if session_start_sec is not None and timestamp_sec >= session_start_sec:
+        return timestamp_sec - session_start_sec
+    return timestamp_sec
+
+
 def _is_placeholder(text: str) -> bool:
     return _TODO_MARKER in text
 
@@ -142,30 +153,6 @@ def chunk_session_document(doc: VaultDocument) -> list[Chunk]:
             )
         )
 
-    highlights = sections.get("주요 순간", "")
-    if highlights and not _is_placeholder(highlights):
-        for idx, line in enumerate(_bullet_lines(highlights)):
-            ts_match = _TIMESTAMP_RE.search(line)
-            start_sec = None
-            if ts_match and session_start_sec is not None:
-                abs_sec = _hhmmss_to_sec(*ts_match.groups())
-                start_sec = abs_sec - session_start_sec
-            chunks.append(
-                Chunk(
-                    chunk_id=_make_chunk_id(doc.path, "주요순간", str(idx)),
-                    doc_path=doc.path,
-                    doc_kind=DocKind.SESSION,
-                    level=ChunkLevel.HIGHLIGHT,
-                    text=_clean_bullet_text(line),
-                    date=doc.date,
-                    session_title=session_title,
-                    session_time_range=time_range,
-                    start_sec=start_sec,
-                    timestamp_label=ts_match.group(0) if ts_match else None,
-                    video_path=video_path,
-                )
-            )
-
     transcript = sections.get("전사록", "")
     if transcript and not _is_placeholder(transcript):
         for idx, raw_line in enumerate(transcript.splitlines()):
@@ -176,7 +163,7 @@ def chunk_session_document(doc: VaultDocument) -> list[Chunk]:
             if not match:
                 continue
             abs_sec = _hhmmss_to_sec(match.group("h"), match.group("m"), match.group("s"))
-            start_sec = abs_sec - session_start_sec if session_start_sec is not None else None
+            start_sec = _to_video_offset(abs_sec, session_start_sec)
             chunks.append(
                 Chunk(
                     chunk_id=_make_chunk_id(doc.path, "전사록", str(idx)),
@@ -199,9 +186,9 @@ def chunk_session_document(doc: VaultDocument) -> list[Chunk]:
         for idx, line in enumerate(_bullet_lines(scene_captions)):
             ts_match = _TIMESTAMP_RE.search(line)
             start_sec = None
-            if ts_match and session_start_sec is not None:
-                abs_sec = _hhmmss_to_sec(*ts_match.groups())
-                start_sec = abs_sec - session_start_sec
+            if ts_match:
+                timestamp_sec = _hhmmss_to_sec(*ts_match.groups())
+                start_sec = _to_video_offset(timestamp_sec, session_start_sec)
             chunks.append(
                 Chunk(
                     chunk_id=_make_chunk_id(doc.path, "장면캡션", str(idx)),

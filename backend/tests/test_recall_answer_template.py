@@ -12,7 +12,7 @@ def _chunk(text: str, score: float) -> Evidence:
         chunk_id=f"test#{text[:8]}",
         doc_path=Path("sessions/x.md"),
         doc_kind=DocKind.SESSION,
-        level=ChunkLevel.HIGHLIGHT,
+        level=ChunkLevel.TRANSCRIPT,
         text=text,
         date=None,
         session_title="test",

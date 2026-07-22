@@ -30,6 +30,7 @@ from .fallback.trigger import (
     decide_fallback,
 )
 from .index.embeddings.factory import DEFAULT_PROVIDER as DEFAULT_EMBEDDING_PROVIDER
+from .index.postgres_store import PostgresIndex, build_postgres_index
 from .index.store import RefreshStats, VaultIndex, build_index
 from .search.coarse_to_fine import RetrievalResult, coarse_to_fine_search
 
@@ -104,10 +105,17 @@ class RecallPipeline:
         answer_provider: str = DEFAULT_ANSWER_PROVIDER,
         classifier_provider: str = DEFAULT_CLASSIFIER_PROVIDER,
         video_requery_client: VideoRequeryClient | None = None,
+        database_url: str | None = None,
     ) -> None:
-        self.index: VaultIndex = build_index(
-            vault_dir, cache_path=cache_path, embedding_provider=embedding_provider
-        )
+        self.index: VaultIndex | PostgresIndex
+        if database_url:
+            self.index = build_postgres_index(
+                database_url,
+                vault_dir,
+                embedding_provider=embedding_provider,
+            )
+        else:
+            self.index = build_index(vault_dir, cache_path=cache_path, embedding_provider=embedding_provider)
         self.classifier = get_question_classifier(classifier_provider)
         self.answer_generator = get_answer_generator(answer_provider)
         self.video_requery_client: VideoRequeryClient = video_requery_client or StubVideoRequeryClient()

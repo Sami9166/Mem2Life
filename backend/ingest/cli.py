@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -82,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="파이프라인 종료 후 추출된 .wav 오디오 파일을 삭제한다 (기본: 보존).",
     )
+    parser.add_argument(
+        "--database-url",
+        default=os.environ.get("MEM2LIFE_DATABASE_URL"),
+        help="PostgreSQL DSN. 생략하면 기존 파일 모드로 실행한다.",
+    )
     return parser
 
 
@@ -105,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             participants=args.participants,
             stt_provider=args.stt_provider,
             keep_audio=not args.delete_audio,
+            database_url=args.database_url,
         )
     except (OSError, ValueError, RuntimeError) as exc:
         # OSError는 FileNotFoundError(입력 영상 없음)뿐 아니라 PermissionError,
@@ -121,6 +128,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[완료] 전사록 발화 수  : {len(result.transcript.segments)}")
     print(f"[완료] 감지된 화자     : {', '.join(result.transcript.speakers)}")
     print(f"[완료] 세션 md 생성    : {result.session_md_path}")
+    if result.session_id:
+        print(f"[완료] DB 세션 ID      : {result.session_id}")
+        print(f"[완료] 전사록 원본     : {result.transcript_path}")
     return 0
 
 
