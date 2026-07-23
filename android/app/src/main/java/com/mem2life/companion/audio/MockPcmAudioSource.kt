@@ -13,14 +13,12 @@ import kotlinx.coroutines.launch
 private const val TAG = "Mem2Life:MockAudio"
 
 /**
- * 실기기 없이(Mock Device Kit으로 영상만 시뮬레이션되는 동안) 오디오 파이프라인을
- * 검증하기 위한 목업 소스.
+ * 마이크가 없거나 불안정한 개발 환경(일부 에뮬레이터 구성, CI 등)에서 오디오
+ * 파이프라인만 검증하기 위한 목업 소스.
  *
- * Meta Mock Device Kit은 카메라 피드/사진 캡처/권한/기기 상태만 시뮬레이션하고
- * 마이크(HFP) 입력은 시뮬레이션하지 않는다 — 이는 DAT SDK의 공식 문서에서 확인한
- * 사실이며 CLAUDE.md가 가정한 "Mock Device Kit으로 영상/음성 스트림 수신 개발"과
- * 어긋나는 부분이다(배경은 루트 CLAUDE.md "알려진 리스크 / 검증 대기" 절의
- * 확인됨 항목 참고). 그래서 오디오 쪽은 자체 목업이 필요하다.
+ * Vuzix Blade 2 실기기에서는 온보드 마이크를 [DeviceMicAudioSource]가 직접
+ * 캡처하므로 이 목업은 개발/디버그 용도로만 쓰인다(MainActivity의 "목업 오디오
+ * 소스 사용" 체크박스, 기본 꺼짐).
  *
  * assets/mock_audio/sample_conversation_16k_mono.pcm (raw PCM16/16kHz/mono, 헤더 없음)이
  * 있으면 그것을 실시간 속도로 반복 재생하고, 없으면 440Hz 톤을 생성해 최소한

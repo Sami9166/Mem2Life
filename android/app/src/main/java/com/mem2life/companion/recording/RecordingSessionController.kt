@@ -3,8 +3,9 @@ package com.mem2life.companion.recording
 import android.content.Context
 import android.util.Log
 import com.mem2life.companion.audio.AudioSource
-import com.mem2life.companion.audio.BluetoothScoAudioSource
+import com.mem2life.companion.audio.DeviceMicAudioSource
 import com.mem2life.companion.audio.MockPcmAudioSource
+import com.mem2life.companion.camera.BladeCameraController
 import com.mem2life.companion.capture.VideoChunkEncoder
 import com.mem2life.companion.config.BackendConfigStore
 import com.mem2life.companion.net.AudioSocketState
@@ -12,9 +13,6 @@ import com.mem2life.companion.net.AudioStreamSocket
 import com.mem2life.companion.net.SessionApiClient
 import com.mem2life.companion.net.SessionStartRequest
 import com.mem2life.companion.net.VideoChunkUploadQueue
-import com.mem2life.companion.wearables.WearablesGlassesController
-import com.meta.wearable.dat.camera.types.StreamConfiguration
-import com.meta.wearable.dat.camera.types.VideoQuality
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,16 +27,24 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 private const val TAG = "Mem2Life:RecordingCtrl"
 
-/** DAT 카메라 영상 해상도 = VideoQuality.HIGH(720x1280). CLAUDE.md의 "720p"와 대응. */
-private val STREAM_CONFIGURATION = StreamConfiguration(videoQuality = VideoQuality.HIGH, frameRate = 24)
+/**
+ * Vuzix Blade 2 온보드 카메라 캡처 해상도 — CLAUDE.md의 "720p" 계약에 맞춘
+ * 1280x720(landscape). Blade 2 카메라는 최대 1080p까지 YUV 출력을 지원하지만
+ * 계약 해상도와 업로드 대역폭을 고려해 720p로 고정한다.
+ * (기존 Meta DAT 스트림은 세로 720x1280이었다 — Blade 2는 착용자 시점의
+ * 가로 프레임이 자연스럽고 카메라도 landscape 센서다.)
+ */
+private const val VIDEO_WIDTH_PX = 1280
+private const val VIDEO_HEIGHT_PX = 720
+private const val VIDEO_FRAME_RATE_FPS = 24
 private const val CHUNK_DURATION_SEC = 30.0
 private const val QUEUE_DRAIN_GRACE_MS = 10_000L
 
 /**
  * 녹화 세션 전체를 오케스트레이션한다:
  *   backend /sessions/start
- *   -> (오디오 소스 먼저 시작 — HFP 라우트가 DAT 스트림보다 먼저 안정화되어야 함)
- *   -> DAT 글래스 세션+카메라 스트림 시작
+ *   -> 오디오 소스(온보드 마이크) 시작
+ *   -> 온보드 카메라(Camera2) 캡처 시작
  *   -> 영상 프레임 -> 30초 mp4 인코딩 -> 로컬 큐 -> HTTP 업로드(seq 순서, 재시도)
  *   -> 오디오 프레임 -> WebSocket 스트리밍(재연결, 유실 허용)
  *   -> backend /sessions/{id}/end
@@ -47,7 +53,7 @@ private const val QUEUE_DRAIN_GRACE_MS = 10_000L
  */
 class RecordingSessionController(
     private val context: Context,
-    private val wearablesController: WearablesGlassesController,
+    private val cameraController: BladeCameraController,
     private val backendConfigStore: BackendConfigStore,
     private val useMockAudioSource: Boolean,
 ) {
@@ -111,9 +117,9 @@ class RecordingSessionController(
             val encoder =
                 VideoChunkEncoder(
                     outputDir = encoderTmpDir,
-                    width = STREAM_CONFIGURATION.videoQuality.widthPx(),
-                    height = STREAM_CONFIGURATION.videoQuality.heightPx(),
-                    frameRateFps = STREAM_CONFIGURATION.frameRate,
+                    width = VIDEO_WIDTH_PX,
+                    height = VIDEO_HEIGHT_PX,
+                    frameRateFps = VIDEO_FRAME_RATE_FPS,
                     chunkDurationSec = CHUNK_DURATION_SEC,
                     onChunkReady = { chunk ->
                         queue.enqueue(chunk.file, chunk.seq, chunk.startTsSec, chunk.durationSec)
@@ -129,12 +135,13 @@ class RecordingSessionController(
                 if (useMockAudioSource) {
                     MockPcmAudioSource(context)
                 } else {
-                    BluetoothScoAudioSource(context)
+                    DeviceMicAudioSource(context)
                 }
             audioSource = source
 
-            // llms.txt 가이드: HFP 마이크를 DAT 카메라 스트림보다 먼저 설정하고
-            // 라우트가 안정화되길 기다린 뒤 스트림을 시작해야 한다.
+            // Blade 2에서는 카메라/마이크가 같은 기기 안에 있어 과거 Meta 설계의
+            // "HFP 라우트를 카메라 스트림보다 먼저 안정화" 같은 순서 제약은 없다.
+            // 오디오를 먼저 시작하는 것은 세션 초반 오디오 공백을 줄이기 위함이다.
             val audioStarted =
                 source.start(scope) { pcmFrame -> socket.sendPcmFrame(pcmFrame) }
             if (!audioStarted) {
@@ -143,21 +150,22 @@ class RecordingSessionController(
             socket.connect(sessionId)
 
             encoder.start(scope)
-            val glassesResult =
-                wearablesController.startGlassesSession(
-                    scope = scope,
-                    streamConfiguration = STREAM_CONFIGURATION,
-                    onVideoFrame = { frame -> encoder.onVideoFrame(frame) },
+            val cameraResult =
+                cameraController.startCameraSession(
+                    widthPx = VIDEO_WIDTH_PX,
+                    heightPx = VIDEO_HEIGHT_PX,
+                    frameRateFps = VIDEO_FRAME_RATE_FPS,
+                    onVideoFrame = { i420, ptsUs -> encoder.onVideoFrame(i420, ptsUs) },
                     onSessionEnded = { reason ->
-                        Log.w(TAG, "글래스 세션이 예기치 않게 종료됨: $reason")
+                        Log.w(TAG, "카메라 세션이 예기치 않게 종료됨: $reason")
                         stopRecording()
                     },
                 )
 
-            if (glassesResult.isFailure) {
+            if (cameraResult.isFailure) {
                 _state.value =
                     RecordingState.Error(
-                        "글래스 세션 시작 실패: ${glassesResult.exceptionOrNull()?.message}",
+                        "카메라 시작 실패: ${cameraResult.exceptionOrNull()?.message}",
                     )
                 cleanupAfterFailure()
                 return@launch
@@ -172,7 +180,7 @@ class RecordingSessionController(
         if (_state.value is RecordingState.Stopping || _state.value is RecordingState.Stopped) return
         _state.value = RecordingState.Stopping
         scope.launch {
-            wearablesController.stopGlassesSession()
+            cameraController.stopCameraSession()
             videoChunkEncoder?.stop() // 마지막 짧은 청크도 큐로 넘어감
             audioSource?.stop()
             audioSocket?.disconnect()
@@ -195,7 +203,7 @@ class RecordingSessionController(
     }
 
     private fun cleanupAfterFailure() {
-        wearablesController.stopGlassesSession()
+        cameraController.stopCameraSession()
         videoChunkEncoder?.stop()
         audioSource?.stop()
         audioSocket?.disconnect()
@@ -211,17 +219,3 @@ data class RecordingStatusSnapshot(
     val audioSocketState: AudioSocketState = AudioSocketState.DISCONNECTED,
     val audioReconnectDrops: Int = 0,
 )
-
-private fun VideoQuality.widthPx(): Int =
-    when (this) {
-        VideoQuality.HIGH -> 720
-        VideoQuality.MEDIUM -> 504
-        VideoQuality.LOW -> 360
-    }
-
-private fun VideoQuality.heightPx(): Int =
-    when (this) {
-        VideoQuality.HIGH -> 1280
-        VideoQuality.MEDIUM -> 896
-        VideoQuality.LOW -> 640
-    }

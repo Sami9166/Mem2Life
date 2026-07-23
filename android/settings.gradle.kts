@@ -1,14 +1,9 @@
-// Mem2Life Android 컴패니언 앱 — Gradle 설정
+// Mem2Life Vuzix Blade 2 온글래스 앱 — Gradle 설정
 //
-// Meta Wearables DAT SDK는 GitHub Packages로 배포된다. 저장소 접근에는
-// read:packages 스코프의 GitHub 개인 액세스 토큰이 필요하다 (환경변수
-// GITHUB_TOKEN 또는 local.properties의 github_token 키로 제공).
-// 절차는 https://github.com/facebook/meta-wearables-dat-android 참고.
-
-import java.util.Properties
-import kotlin.io.path.div
-import kotlin.io.path.exists
-import kotlin.io.path.inputStream
+// Vuzix Blade 2는 Android 11(API 30)이 탑재된 독립 실행형 기기로, 표준 Android
+// API(Camera2, AudioRecord 등)만으로 개발한다 — 별도의 사설 SDK 저장소나
+// 인증 토큰이 필요 없다. (과거 Meta DAT SDK 시절의 GitHub Packages 저장소와
+// 토큰 로딩 로직은 Vuzix Blade 2 전환과 함께 제거됐다.)
 
 pluginManagement {
     repositories {
@@ -24,26 +19,11 @@ pluginManagement {
     }
 }
 
-val localProperties =
-    Properties().apply {
-        val localPropertiesPath = rootDir.toPath() / "local.properties"
-        if (localPropertiesPath.exists()) {
-            load(localPropertiesPath.inputStream())
-        }
-    }
-
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
         mavenCentral()
-        maven {
-            url = uri("https://maven.pkg.github.com/facebook/meta-wearables-dat-android")
-            credentials {
-                username = "" // 사용하지 않음
-                password = System.getenv("GITHUB_TOKEN") ?: localProperties.getProperty("github_token")
-            }
-        }
     }
 }
 

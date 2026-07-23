@@ -6,8 +6,8 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.Bundle
 import android.util.Log
-import com.meta.wearable.dat.camera.types.VideoFrame
 import java.io.File
+import java.nio.ByteBuffer
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -22,11 +22,12 @@ private const val I_FRAME_INTERVAL_SEC = 2
 private const val BITRATE_BPS = 4_000_000
 
 /**
- * DAT `Stream.videoStream`에서 받은 [VideoFrame](원시 I420 YUV)을 H.264로 인코딩하고,
- * 업로드 API 계약이 요구하는 30초 mp4 청크로 잘라 [outputDir]에 순서대로 기록한다.
+ * Vuzix Blade 2 온보드 카메라(BladeCameraController)가 넘겨주는 tightly-packed
+ * I420 YUV 프레임을 H.264로 인코딩하고, 업로드 API 계약이 요구하는 30초 mp4
+ * 청크로 잘라 [outputDir]에 순서대로 기록한다.
  *
  * 내부 시간 도메인: 모든 프레젠테이션 타임스탬프는 "세션 시작 기준 상대 시각(us)"으로
- * 통일한다 — 첫 프레임의 [VideoFrame.presentationTimeUs]를 0으로 잡고, 이후 모든 값에서
+ * 통일한다 — 첫 프레임의 presentationTimeUs를 0으로 잡고, 이후 모든 값에서
  * 그 값을 빼서 인코더에 넘긴다. 그래야 청크의 `startTsSec`가 계약이 요구하는
  * "세션 시작 기준 초(start_ts)"와 정확히 같아진다.
  *
@@ -65,9 +66,9 @@ class VideoChunkEncoder(
 
     private var drainJob: Job? = null
 
-    // DAT의 VideoFrame.buffer는 SDK 내부에서 재사용되는 버퍼일 수 있으므로(공식
-    // 샘플도 콜백에서 즉시 변환한다), 큐에 넣기 전에 인코더가 원하는 포맷으로 즉시
-    // 복사/변환해 둔다 — 드레인 스레드가 나중에 처리할 때 버퍼가 덮어써지는 것을 방지.
+    // BladeCameraController는 프레임마다 새 I420 배열을 할당해 넘기므로(Camera2
+    // Image는 콜백 안에서 close되기 전에 이미 복사됨) 버퍼 재사용 걱정은 없다.
+    // NV12가 필요한 인코더라면 큐에 넣기 전에 여기서 변환한다.
     private val pendingFrames = LinkedBlockingQueue<QueuedFrame>()
     @Volatile private var running = false
 
@@ -103,19 +104,27 @@ class VideoChunkEncoder(
     }
 
     /**
-     * DAT `Stream.videoStream`에서 새 프레임이 올 때마다 호출한다(수집 코루틴에서 호출).
-     * 여기서 즉시 인코더 컬러 포맷으로 변환/복사해 큐에 넣는다(버퍼 재사용 대비).
+     * 카메라 컨트롤러에서 새 프레임이 올 때마다 호출한다(카메라 콜백 스레드에서 호출).
+     * [i420]은 tightly-packed I420(Y, U, V 순서) 버퍼여야 하며, 호출자가 프레임마다
+     * 새로 할당해 소유권을 넘긴다. 인코더가 NV12를 요구하면 여기서 즉시 변환한다.
      */
-    fun onVideoFrame(frame: VideoFrame) {
+    fun onVideoFrame(i420: ByteArray, presentationTimeUs: Long) {
         if (!running) return
         val expectedSize = width * height * 3 / 2
-        val convertBuffer = ByteArray(expectedSize)
-        when (colorFormat) {
-            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar ->
-                YuvColorConverter.i420ToNv12(frame.buffer, width, height, convertBuffer)
-            else -> YuvColorConverter.copyI420(frame.buffer, width, height, convertBuffer)
+        if (i420.size < expectedSize) {
+            Log.w(TAG, "프레임 크기 불일치(expected>=$expectedSize, got=${i420.size}) — 드롭")
+            return
         }
-        pendingFrames.offer(QueuedFrame(convertBuffer, frame.presentationTimeUs))
+        val data =
+            when (colorFormat) {
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar -> {
+                    val convertBuffer = ByteArray(expectedSize)
+                    YuvColorConverter.i420ToNv12(ByteBuffer.wrap(i420), width, height, convertBuffer)
+                    convertBuffer
+                }
+                else -> i420
+            }
+        pendingFrames.offer(QueuedFrame(data, presentationTimeUs))
     }
 
     /** 세션 종료 시 호출. 남은 프레임을 flush하고 마지막 청크를 마무리해 콜백한다. */

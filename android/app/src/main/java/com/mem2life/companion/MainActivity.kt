@@ -6,7 +6,6 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -22,6 +21,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -31,23 +31,30 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.mem2life.companion.camera.BladeCameraController
 import com.mem2life.companion.config.BackendConfigStore
-import com.mem2life.companion.mock.MockDeviceKitController
 import com.mem2life.companion.recording.RecordingForegroundService
 import com.mem2life.companion.recording.RecordingSessionController
 import com.mem2life.companion.recording.RecordingState
-import com.mem2life.companion.wearables.WearablesGlassesController
 
 /**
- * 1단계 데모용 단일 화면 UI. 푸시투톡 질의/TTS 재생은 이 화면의 범위가 아니다
- * (recall-dev 이후 작업) — 여기서는 등록/녹화 시작·정지/업로드 상태/Mock Device Kit
- * 디버그 패널만 다룬다.
+ * Vuzix Blade 2 온글래스 단일 화면 UI. 푸시투톡 질의/TTS 재생은 이 화면의 범위가
+ * 아니다(recall-dev 이후 작업) — 여기서는 백엔드 설정/녹화 시작·정지/업로드 상태만 다룬다.
+ *
+ * Blade 2 UI 제약:
+ *  - 디스플레이 480x480, 웨이브가이드 특성상 검정 = 투명 → 순수 검정 배경의
+ *    다크 테마를 쓴다(Vuzix 공식 가이드라인).
+ *  - 터치스크린이 없다. 관자놀이 터치패드가 트랙볼/D-pad 이벤트로 들어오므로
+ *    모든 조작 요소는 포커스 이동(스와이프) + 탭(클릭)으로 동작해야 한다 —
+ *    Compose의 Button/Checkbox/TextField는 기본적으로 포커스 내비게이션을
+ *    지원하므로 별도 처리 없이 동작한다.
  */
 class MainActivity : ComponentActivity() {
 
-    private val wearablesController = WearablesGlassesController()
+    private val cameraController = BladeCameraController(this)
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
@@ -57,9 +64,10 @@ class MainActivity : ComponentActivity() {
         requestRuntimePermissionsIfNeeded()
 
         setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    Mem2LifeScreen(activity = this, wearablesController = wearablesController)
+            // 웨이브가이드에서 검정이 투명으로 보이므로 배경은 항상 순수 검정.
+            MaterialTheme(colorScheme = darkColorScheme(background = Color.Black, surface = Color.Black)) {
+                Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
+                    Mem2LifeScreen(activity = this, cameraController = cameraController)
                 }
             }
         }
@@ -67,9 +75,6 @@ class MainActivity : ComponentActivity() {
 
     private fun requestRuntimePermissionsIfNeeded() {
         val needed = mutableListOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            needed += Manifest.permission.BLUETOOTH_CONNECT
-        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             needed += Manifest.permission.POST_NOTIFICATIONS
         }
@@ -84,19 +89,19 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun Mem2LifeScreen(activity: ComponentActivity, wearablesController: WearablesGlassesController) {
+private fun Mem2LifeScreen(activity: ComponentActivity, cameraController: BladeCameraController) {
     val context = activity
 
     val backendConfigStore = remember { BackendConfigStore(context) }
-    val mockDeviceKitController = remember { MockDeviceKitController(context) }
 
-    var useMockAudio by rememberSaveable { mutableStateOf(true) }
+    // Blade 2 실기기에는 온보드 마이크가 있으므로 기본은 실제 마이크. 마이크가
+    // 없는/불안정한 개발 환경에서만 목업 오디오로 전환한다.
+    var useMockAudio by rememberSaveable { mutableStateOf(false) }
     val recordingController =
         remember(useMockAudio) {
-            RecordingSessionController(context, wearablesController, backendConfigStore, useMockAudio)
+            RecordingSessionController(context, cameraController, backendConfigStore, useMockAudio)
         }
 
-    val registrationState by wearablesController.registrationState.collectAsState()
     val recordingState by recordingController.state.collectAsState()
     val statusSnapshot by recordingController.statusSnapshot.collectAsState()
 
@@ -116,11 +121,6 @@ private fun Mem2LifeScreen(activity: ComponentActivity, wearablesController: Wea
     var hostText by remember { mutableStateOf(config.host) }
     var portText by remember { mutableStateOf(config.port.toString()) }
 
-    val videoPicker =
-        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            uri?.let { mockDeviceKitController.setCameraFeed(it) }
-        }
-
     LaunchedEffect(recordingState) {
         when (recordingState) {
             is RecordingState.Recording -> RecordingForegroundService.start(context)
@@ -130,16 +130,32 @@ private fun Mem2LifeScreen(activity: ComponentActivity, wearablesController: Wea
         }
     }
 
-    Scaffold { padding ->
+    Scaffold(containerColor = Color.Black) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxSize().padding(padding).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
-                Text("Mem2Life 컴패니언", style = MaterialTheme.typography.headlineSmall)
-                Text("글래스 등록 상태: $registrationState")
-                Button(onClick = { wearablesController.startRegistration(activity) }) {
-                    Text("글래스 연결(Meta AI 앱 등록)")
+                Text("Mem2Life (Vuzix Blade 2)", style = MaterialTheme.typography.titleLarge)
+            }
+
+            item { HorizontalDivider() }
+
+            item {
+                Text("녹화", style = MaterialTheme.typography.titleMedium)
+                Text("상태: $recordingState")
+                Text(
+                    "영상 청크 — 대기 중: ${statusSnapshot.pendingVideoChunks}, " +
+                        "업로드됨: ${statusSnapshot.uploadedVideoChunks}" +
+                        (statusSnapshot.lastUploadError?.let { ", 최근 오류: $it" } ?: ""),
+                )
+                Text(
+                    "오디오 WebSocket: ${statusSnapshot.audioSocketState} " +
+                        "(재연결로 인한 유실 구간 ${statusSnapshot.audioReconnectDrops}회)",
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { recordingController.startRecording() }) { Text("녹화 시작") }
+                    Button(onClick = { recordingController.stopRecording() }) { Text("녹화 종료") }
                 }
             }
 
@@ -150,7 +166,7 @@ private fun Mem2LifeScreen(activity: ComponentActivity, wearablesController: Wea
                 OutlinedTextField(
                     value = hostText,
                     onValueChange = { hostText = it },
-                    label = { Text("Host (예: 10.0.2.2 = 에뮬레이터에서 본 노트북 localhost)") },
+                    label = { Text("Host (Blade 2 실기기: 백엔드 PC의 LAN IP)") },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
@@ -172,7 +188,7 @@ private fun Mem2LifeScreen(activity: ComponentActivity, wearablesController: Wea
             item { HorizontalDivider() }
 
             item {
-                Text("녹화", style = MaterialTheme.typography.titleMedium)
+                Text("디버그", style = MaterialTheme.typography.titleMedium)
                 Row {
                     Checkbox(
                         checked = useMockAudio,
@@ -180,46 +196,9 @@ private fun Mem2LifeScreen(activity: ComponentActivity, wearablesController: Wea
                         enabled = canToggleMockAudio,
                     )
                     Text(
-                        "목업 오디오 소스 사용 (실기기 HFP 마이크 없을 때, 기본 켜짐)" +
+                        "목업 오디오 소스 사용 (마이크 없는 개발 환경용, 기본 꺼짐)" +
                             if (!canToggleMockAudio) " — 녹화 중에는 변경 불가" else "",
                     )
-                }
-                Text("상태: $recordingState")
-                Text(
-                    "영상 청크 — 대기 중: ${statusSnapshot.pendingVideoChunks}, " +
-                        "업로드됨: ${statusSnapshot.uploadedVideoChunks}" +
-                        (statusSnapshot.lastUploadError?.let { ", 최근 오류: $it" } ?: ""),
-                )
-                Text(
-                    "오디오 WebSocket: ${statusSnapshot.audioSocketState} " +
-                        "(재연결로 인한 유실 구간 ${statusSnapshot.audioReconnectDrops}회)",
-                )
-                Row {
-                    Button(onClick = { recordingController.startRecording() }) { Text("녹화 시작") }
-                    Button(onClick = { recordingController.stopRecording() }) { Text("녹화 종료") }
-                }
-            }
-
-            item { HorizontalDivider() }
-
-            item {
-                Text("Mock Device Kit (디버그)", style = MaterialTheme.typography.titleMedium)
-                val mockState by mockDeviceKitController.uiState.collectAsState()
-                Text("$mockState")
-                Row {
-                    Button(onClick = { mockDeviceKitController.enable() }) { Text("Enable") }
-                    Button(onClick = { mockDeviceKitController.disable() }) { Text("Disable") }
-                }
-                Row {
-                    Button(onClick = { mockDeviceKitController.pairRayBanMeta() }) { Text("Pair RayBan Meta") }
-                }
-                Row {
-                    Button(onClick = { mockDeviceKitController.powerOn() }) { Text("Power On") }
-                    Button(onClick = { mockDeviceKitController.unfold() }) { Text("Unfold") }
-                    Button(onClick = { mockDeviceKitController.don() }) { Text("Don") }
-                }
-                Button(onClick = { videoPicker.launch(arrayOf("video/*")) }) {
-                    Text("목업 카메라 피드 영상 선택 (h.264/h.265)")
                 }
             }
         }
