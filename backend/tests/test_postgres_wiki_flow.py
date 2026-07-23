@@ -77,6 +77,7 @@ def test_ingest_db_flow_reads_db_before_markdown_and_indexes_it(
         session_start=datetime(2026, 7, 22, 14, 0),
         database_url="postgresql://test",
         summary="민수와 제주도 여행 계획을 논의했다.",
+        highlights=[(1.0, 2.0, "제주도 여행 출발일을 확정했다.")],
         captions=[(2.0, 5.0, "제주도 여행 책자가 보인다.")],
     )
 
@@ -86,6 +87,7 @@ def test_ingest_db_flow_reads_db_before_markdown_and_indexes_it(
     assert result.transcript_path is not None and result.transcript_path.exists()
     assert {item.kind for item in database.session.items} == {
         "summary",
+        "highlight",
         "transcript",
         "caption",
     }
@@ -98,10 +100,11 @@ def test_ingest_db_flow_reads_db_before_markdown_and_indexes_it(
     assert f'session_id: "{result.session_id}"' in markdown
     assert "transcript:" in markdown
     assert "민수와 제주도 여행 계획을 논의했다." in markdown
+    assert "제주도 여행 출발일을 확정했다." in markdown
     assert "제주도 여행 책자가 보인다." in markdown
 
 
-def test_index_markdown_file_creates_summary_transcript_caption_vectors(tmp_path: Path) -> None:
+def test_index_markdown_file_creates_all_session_vectors(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     sessions = vault / "sessions"
     sessions.mkdir(parents=True)
@@ -117,6 +120,10 @@ video: "video.mp4"
 
 민수와 제주도 여행을 논의했다.
 
+## 주요 순간
+
+- [00:01:02] 제주도 여행 출발일을 확정했다.
+
 ## 전사록
 
 [00:01:00] 민수: 숙소는 서귀포로 알아보자.
@@ -131,11 +138,12 @@ video: "video.mp4"
 
     count = index_markdown_file(database, vault, path, session_id="session-1")
 
-    assert count == 3
+    assert count == 4
     assert database.document is not None
     items = database.document["items"]
     assert {item.metadata["level"] for item in items} == {
         "session_summary",
+        "highlight",
         "transcript",
         "scene_caption",
     }
@@ -195,6 +203,7 @@ def test_real_postgres_ingest_markdown_index_and_search(
         session_start=datetime(2026, 7, 22, 14, 0),
         database_url=database_url,
         summary="Min plans a Seogwipo lodging trip.",
+        highlights=[(1.0, 2.0, "Min confirms the Seogwipo lodging plan.")],
         captions=[(2.0, 5.0, "A Seogwipo travel guide is visible.")],
     )
 
@@ -224,12 +233,13 @@ def test_real_postgres_ingest_markdown_index_and_search(
         assert Path(session[1]).exists() and Path(session[2]).exists()
         assert {row[0] for row in kinds} == {
             "summary",
+            "highlight",
             "transcript",
             "caption",
         }
         assert document is not None
         assert "Seogwipo lodging" in document[0]
-        assert document[1] >= 3
+        assert document[1] >= 4
         assert document[2] == VECTOR_DIM
 
         index = PostgresIndex(database_url, vault)

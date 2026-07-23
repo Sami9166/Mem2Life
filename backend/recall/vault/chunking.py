@@ -5,6 +5,7 @@ EgoRAG coarse-to-fine 층위(기술조사_의사결정.md 조사 6)에 맞춰 �
 
     daily/*.md      → ChunkLevel.DAILY        (1개, "## 요약" 섹션 전체)
     sessions/*.md   → ChunkLevel.SESSION_SUMMARY (1개, "## 요약")
+                    → ChunkLevel.HIGHLIGHT       (줄 단위, "## 주요 순간")
                     → ChunkLevel.TRANSCRIPT      (줄 단위, "## 전사록")
                     → ChunkLevel.SCENE_CAPTION   (줄 단위, "## 장면 캡션")
     people/*.md     → ChunkLevel.ENTITY        (섹션 단위)
@@ -152,6 +153,30 @@ def chunk_session_document(doc: VaultDocument) -> list[Chunk]:
                 video_path=video_path,
             )
         )
+
+    highlights = sections.get("주요 순간", "")
+    if highlights and not _is_placeholder(highlights):
+        for idx, line in enumerate(_bullet_lines(highlights)):
+            ts_match = _TIMESTAMP_RE.search(line)
+            start_sec = None
+            if ts_match:
+                timestamp_sec = _hhmmss_to_sec(*ts_match.groups())
+                start_sec = _to_video_offset(timestamp_sec, session_start_sec)
+            chunks.append(
+                Chunk(
+                    chunk_id=_make_chunk_id(doc.path, "주요순간", str(idx)),
+                    doc_path=doc.path,
+                    doc_kind=DocKind.SESSION,
+                    level=ChunkLevel.HIGHLIGHT,
+                    text=_clean_bullet_text(line),
+                    date=doc.date,
+                    session_title=session_title,
+                    session_time_range=time_range,
+                    start_sec=start_sec,
+                    timestamp_label=ts_match.group(0) if ts_match else None,
+                    video_path=video_path,
+                )
+            )
 
     transcript = sections.get("전사록", "")
     if transcript and not _is_placeholder(transcript):

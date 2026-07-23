@@ -5,7 +5,7 @@ coarse-to-fine 검색". 3단계로 구현한다:
 
 1. **daily(coarse)**: 질문의 날짜 힌트(`date_hints.py`)로 후보를 좁히거나,
    힌트가 없으면 daily 요약 전체를 하이브리드 검색해 관련 날짜를 추론한다.
-2. **session(middle)**: 좁혀진 날짜(있다면) 안에서 세션 요약과
+2. **session(middle)**: 좁혀진 날짜(있다면) 안에서 세션 요약/주요 순간과
    people/topics 엔티티 페이지를 하이브리드 검색해 관련 세션을 고른다.
 3. **transcript/caption(fine)**: 고른 세션의 전사록/장면 캡션 줄 단위
    청크를 하이브리드 검색해 타임스탬프가 붙은 세부 근거를 뽑는다.
@@ -33,7 +33,7 @@ class RetrievalResult:
     resolved_date: date_type | None  # 질문 문구에서 직접 해석된 날짜(있으면)
     narrowed_dates: frozenset[date_type]  # 실제로 좁혀진 날짜 집합(daily 검색 결과 기반)
     daily_evidence: list[Evidence]
-    session_evidence: list[Evidence]  # 세션 요약
+    session_evidence: list[Evidence]  # 세션 요약/주요 순간 (타임스탬프 있음)
     entity_evidence: list[Evidence]  # people/topics 페이지 (라우팅 보조 신호)
     fine_evidence: list[Evidence]
     chosen_sessions: tuple[Path, ...]
@@ -87,20 +87,25 @@ def coarse_to_fine_search(
         )
 
     # ------------------------------------------------------------------
-    # 2단계: session(middle) — 세션 요약 + 엔티티 페이지
+    # 2단계: session(middle) — 세션 요약/주요 순간 + 엔티티 페이지
     # ------------------------------------------------------------------
     # 두 풀을 따로 검색한다(합쳐서 한 번에 top_k를 자르지 않는다): people/topics
-    # 페이지는 세션 로그를 산문으로 재서술한 것이라 세션 요약과 별개로
+    # 페이지는 세션 로그를 산문으로 재서술한 것이라 세션 요약/주요 순간과 별개로
     # 라우팅 신호를 제공한다. 두 종류를 독립적으로 top_k개씩 확보한다.
     date_filter = narrowed_dates if narrowed_dates else None
-    session_level_idx = index.indices_for(levels={ChunkLevel.SESSION_SUMMARY}, dates=date_filter)
+    session_level_idx = index.indices_for(
+        levels={ChunkLevel.SESSION_SUMMARY, ChunkLevel.HIGHLIGHT}, dates=date_filter
+    )
     entity_idx = index.indices_for(levels={ChunkLevel.ENTITY})
 
-    session_evidence = index.search(question, indices=session_level_idx, top_k=top_k_session)
+    session_candidates = index.search(
+        question, indices=session_level_idx, top_k=len(session_level_idx)
+    )
+    session_evidence = session_candidates[:top_k_session]
     entity_evidence = index.search(question, indices=entity_idx, top_k=top_k_session)
 
     chosen_sessions: list[Path] = []
-    for ev in session_evidence:
+    for ev in session_candidates:
         if ev.chunk.doc_kind is DocKind.SESSION and ev.chunk.doc_path not in chosen_sessions:
             chosen_sessions.append(ev.chunk.doc_path)
         if len(chosen_sessions) >= max_chosen_sessions:
@@ -110,7 +115,9 @@ def coarse_to_fine_search(
         # 세션 레벨에서 아무것도 못 골랐으면(예: 엔티티 청크만 히트) 좁혀진 날짜
         # 범위 내 모든 세션으로 fine 검색 범위를 넓힌다 — 데모 스케일에서는
         # 세션 수가 적어 비용이 크지 않다.
-        fallback_idx = index.indices_for(levels={ChunkLevel.SESSION_SUMMARY}, dates=date_filter)
+        fallback_idx = index.indices_for(
+            levels={ChunkLevel.SESSION_SUMMARY, ChunkLevel.HIGHLIGHT}, dates=date_filter
+        )
         chosen_sessions = sorted(
             {index.chunks[i].doc_path for i in fallback_idx}, key=lambda p: p.as_posix()
         )[:max_chosen_sessions]

@@ -42,6 +42,7 @@ class ChunkLevel(StrEnum):
 
     DAILY = "daily"
     SESSION_SUMMARY = "session_summary"
+    HIGHLIGHT = "highlight"
     TRANSCRIPT = "transcript"
     SCENE_CAPTION = "scene_caption"
     ENTITY = "entity"

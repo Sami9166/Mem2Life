@@ -81,13 +81,13 @@ DB 원본에서 생성되는 사람이 읽는 Wiki 계약입니다. Markdown은 
 
 ```
 vault/
-├── sessions/YYYY-MM-DD_HHMM_제목.md   # 세션 로그: frontmatter(일시·참석자·video경로) + 요약/전사록 전문/장면캡션
+├── sessions/YYYY-MM-DD_HHMM_제목.md   # 세션 로그: frontmatter + 요약/주요 순간/전사록/장면 캡션
 ├── people/이름.md                      # 인물 페이지 (세션 종료 시 LLM이 자동 갱신 — 예정)
 ├── topics/주제.md                      # 주제 페이지 (〃)
 └── daily/YYYY-MM-DD.md                # 일별 요약
 ```
 
-원칙: 전사록은 요약이 아니라 전문을 보존하고, 전사록과 캡션에는 영상 기준 타임스탬프를 붙이며, `[[위키링크]]`로 그래프를 형성합니다. `backend/testdata/mock_vault/`는 이 스키마를 손으로 채워 넣은 픽스처로, `ingest`가 아직 만들지 못하는 완성형 볼트(VLM 캡션·LLM 요약 포함)를 흉내내 `recall`을 독립적으로 개발·테스트하기 위한 것입니다.
+원칙: 전사록은 요약이 아니라 전문을 보존하고, 전사록·주요 순간·캡션에는 영상 기준 타임스탬프를 붙이며, `[[위키링크]]`로 그래프를 형성합니다. `backend/testdata/mock_vault/`는 이 스키마를 손으로 채워 넣은 픽스처로, `ingest`가 아직 만들지 못하는 완성형 볼트(VLM 캡션·LLM 요약 포함)를 흉내내 `recall`을 독립적으로 개발·테스트하기 위한 것입니다.
 
 ## LLM Wiki DB 스키마
 
@@ -95,7 +95,7 @@ vault/
 
 ```text
 sessions        세션 상태 + video/transcript/markdown 경로
-memory_items    타임스탬프가 붙은 summary/transcript/caption 원본
+memory_items    타임스탬프가 붙은 summary/highlight/transcript/caption 원본
 wiki_documents DB 원본에서 생성한 Markdown 본문
 search_items    Markdown 검색 단위 + 256차원 임베딩(pgvector)
 ```
@@ -120,11 +120,12 @@ markdown_path   C:/Mem2Life/vault/sessions/2026-07-22_1400_제주도_여행_계�
 status          ready
 ```
 
-`memory_items`에는 요약·전사·캡션을 별도 행으로 저장합니다. `start_ms`와 `end_ms`는 영상 시작을 0으로 본 상대 시간입니다.
+`memory_items`에는 요약·주요 순간·전사·캡션을 별도 행으로 저장합니다. `start_ms`와 `end_ms`는 영상 시작을 0으로 본 상대 시간입니다.
 
 | kind | ordinal | start_ms | end_ms | speaker | content |
 | --- | ---: | ---: | ---: | --- | --- |
 | `summary` | 0 | 0 | 300000 | `NULL` | 민수와 현우가 제주도 여행 계획을 논의했다. |
+| `highlight` | 0 | 9000 | 13000 | `NULL` | 서귀포 숙소로 알아보기로 결정했다. |
 | `transcript` | 0 | 5000 | 9000 | 민수 | 숙소는 서귀포로 알아보자. |
 | `transcript` | 1 | 9000 | 13000 | 현우 | 좋아, 가격을 비교해보자. |
 | `caption` | 0 | 10000 | 20000 | `NULL` | 휴대폰에 서귀포 호텔 예약 화면이 보인다. |
@@ -144,6 +145,10 @@ transcript: "C:/Mem2Life/data/sessions/550e8400/transcript.json"
 
 민수와 현우가 제주도 여행 계획을 논의했다.
 
+## 주요 순간
+
+- [00:00:09] 서귀포 숙소로 알아보기로 결정했다.
+
 ## 전사록
 
 [00:00:05] 민수: 숙소는 서귀포로 알아보자.
@@ -159,6 +164,7 @@ Markdown은 검색 단위로 나뉘어 `search_items`에 들어갑니다. `docum
 | chunk 종류 | content | metadata 예시 | embedding 예시 |
 | --- | --- | --- | --- |
 | `session_summary` | 민수와 현우가 제주도 여행 계획을 논의했다. | `{"start_sec": null}` | `[0.12, -0.03, …]` |
+| `highlight` | 서귀포 숙소로 알아보기로 결정했다. | `{"start_sec": 9, "timestamp_label": "[00:00:09]"}` | `[0.04, 0.11, …]` |
 | `transcript` | 민수: 숙소는 서귀포로 알아보자. | `{"start_sec": 5, "timestamp_label": "[00:00:05]", "speaker": "민수"}` | `[0.08, 0.21, …]` |
 | `scene_caption` | 휴대폰에 서귀포 호텔 예약 화면이 보인다. | `{"start_sec": 10, "timestamp_label": "[00:00:10]"}` | `[-0.04, 0.17, …]` |
 

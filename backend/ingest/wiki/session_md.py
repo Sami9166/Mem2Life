@@ -9,12 +9,13 @@ CLAUDE.md / 기술조사_의사결정.md 조사 6의 세션 로그 스키마를 
     video: "/path/to/video.mp4"
     ---
     ## 요약
+    ## 주요 순간
     ## 전사록
     ## 장면 캡션
 
 원칙(전사록 전문 보존): `## 전사록` 섹션은 STT 결과의 요약이 아니라 전문을
 `[HH:MM:SS] 화자: 발화` 형식으로 모두 담는다. 이번 단계(1단계 프로토타입)는
-VLM 캡션·LLM 요약이 없으므로 `## 요약` / `## 장면 캡션`은
+VLM 캡션·LLM 요약이 없으므로 `## 요약` / `## 주요 순간` / `## 장면 캡션`은
 TODO 플레이스홀더로 남긴다.
 """
 
@@ -28,6 +29,7 @@ from pathlib import Path
 from ..stt.base import Transcript, format_timestamp
 
 _TODO_SUMMARY = "TODO: LLM 요약 — 다음 단계(요약·엔티티 갱신)에서 채워진다."
+_TODO_HIGHLIGHTS = "TODO: VLM 캡션 기반 주요 순간 추출 — 다음 단계에서 채워진다."
 _TODO_SCENE_CAPTIONS = "TODO: VLM 키프레임 캡션 — 다음 단계에서 채워진다."
 
 _TITLE_SANITIZE_RE = re.compile(r"[\\/:*?\"<>|\s]+")
@@ -115,6 +117,7 @@ def build_session_markdown(
     session_id: str | None = None,
     transcript_path: str | Path | None = None,
     summary: str | None = None,
+    highlights: Sequence[tuple[float, str]] = (),
     captions: Sequence[tuple[float, str]] = (),
 ) -> str:
     """세션 md 본문 문자열을 만든다 (파일 쓰기는 하지 않음 — 테스트하기 쉽게 분리).
@@ -129,6 +132,7 @@ def build_session_markdown(
         session_id: DB 세션 ID. DB를 사용하지 않는 기존 파일 모드에서는 생략한다.
         transcript_path: STT 원본 JSON 경로. DB 세션을 재처리할 때 사용한다.
         summary: LLM 세션 요약. 아직 생성되지 않았으면 TODO를 기록한다.
+        highlights: ``(영상 기준 시작 초, 설명)`` 주요 순간 목록.
         captions: ``(영상 기준 시작 초, 설명)`` VLM 장면 캡션 목록.
     """
     if session_end is None:
@@ -144,12 +148,17 @@ def build_session_markdown(
     )
     transcript_section = _format_transcript_section(transcript)
     summary_section = summary.strip() if summary and summary.strip() else _TODO_SUMMARY
+    highlights_section = _format_timed_items(highlights) or _TODO_HIGHLIGHTS
     captions_section = _format_timed_items(captions) or _TODO_SCENE_CAPTIONS
 
     body = f"""{frontmatter}
 ## 요약
 
 {summary_section}
+
+## 주요 순간
+
+{highlights_section}
 
 ## 전사록
 
@@ -174,6 +183,7 @@ def write_session_md(
     session_id: str | None = None,
     transcript_path: str | Path | None = None,
     summary: str | None = None,
+    highlights: Sequence[tuple[float, str]] = (),
     captions: Sequence[tuple[float, str]] = (),
 ) -> Path:
     """세션 md를 `vault_dir/sessions/YYYY-MM-DD_HHMM_제목.md`에 생성하고 경로를 반환한다."""
@@ -190,6 +200,7 @@ def write_session_md(
         session_id=session_id,
         transcript_path=transcript_path,
         summary=summary,
+        highlights=highlights,
         captions=captions,
     )
 

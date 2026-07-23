@@ -57,11 +57,12 @@ def test_build_session_markdown_contains_required_sections() -> None:
     assert 'participants: ["[[화자1]]", "[[화자2]]"]' in md
     assert 'video: "testdata/sample.mp4"' in md
     assert "## 요약" in md
+    assert "## 주요 순간" in md
     assert "## 전사록" in md
     assert "## 장면 캡션" in md
     assert "[00:00:00] 화자1: 민수야, 여행 계획 좀 정하자" in md
     assert "[00:00:04] 화자2: 좋아, 날짜부터 정하자" in md
-    assert "TODO" in md  # 요약/장면캡션은 플레이스홀더
+    assert "TODO" in md  # 요약/주요순간/장면캡션은 플레이스홀더
 
 
 def test_build_session_markdown_explicit_end_time() -> None:
@@ -87,12 +88,14 @@ def test_build_session_markdown_renders_db_content_and_paths() -> None:
         session_id="550e8400-e29b-41d4-a716-446655440000",
         transcript_path="data/sessions/550e8400/transcript.json",
         summary="[[민수]]와 제주도 여행 계획을 논의했다.",
+        highlights=[(20.0, "제주도 여행 출발일을 확정했다.")],
         captions=[(25.0, "테이블 위에 제주도 여행 책자가 놓여 있다.")],
     )
 
     assert 'session_id: "550e8400-e29b-41d4-a716-446655440000"' in md
     assert 'transcript: "data/sessions/550e8400/transcript.json"' in md
     assert "[[민수]]와 제주도 여행 계획을 논의했다." in md
+    assert "- [00:00:20] 제주도 여행 출발일을 확정했다." in md
     assert "- [00:00:25] 테이블 위에 제주도 여행 책자가 놓여 있다." in md
 
 

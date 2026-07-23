@@ -75,6 +75,7 @@ def _write_transcript_json(path: Path, transcript: Transcript) -> None:
 def _memory_items(
     transcript: Transcript,
     summary: str | None,
+    highlights: Sequence[tuple[float, float, str]],
     captions: Sequence[tuple[float, float, str]],
 ) -> tuple[MemoryItem, ...]:
     items = [
@@ -98,6 +99,16 @@ def _memory_items(
                 end_ms=round(transcript.duration_sec * 1000),
             )
         )
+    items.extend(
+        MemoryItem(
+            kind="highlight",
+            ordinal=index,
+            content=text,
+            start_ms=round(start_sec * 1000),
+            end_ms=round(end_sec * 1000),
+        )
+        for index, (start_sec, end_sec, text) in enumerate(highlights)
+    )
     items.extend(
         MemoryItem(
             kind="caption",
@@ -143,6 +154,7 @@ def run_ingest_pipeline(
     keep_audio: bool = True,
     database_url: str | None = None,
     summary: str | None = None,
+    highlights: Sequence[tuple[float, float, str]] = (),
     captions: Sequence[tuple[float, float, str]] = (),
 ) -> IngestResult:
     """영상 파일 → 오디오 추출 → STT 스텁 → 세션 md 생성을 순서대로 실행한다.
@@ -164,6 +176,7 @@ def run_ingest_pipeline(
         database_url: PostgreSQL DSN. 지정하면 DB에 원본을 저장하고 다시 읽어
             Markdown과 pgvector 검색 색인을 만든다. 생략하면 기존 파일 모드.
         summary: 세션 전체 LLM 요약. 아직 생성되지 않았으면 생략한다.
+        highlights: ``(시작 초, 종료 초, 설명)`` 주요 순간 목록.
         captions: ``(시작 초, 종료 초, 설명)`` VLM 장면 캡션 목록.
 
     Returns:
@@ -228,7 +241,7 @@ def run_ingest_pipeline(
             markdown_path=None,
             stt_provider=transcript.provider,
             status="processing",
-            items=_memory_items(transcript, summary, captions),
+            items=_memory_items(transcript, summary, highlights, captions),
         )
         database.save_session(stored_session)
 
@@ -251,6 +264,7 @@ def run_ingest_pipeline(
             session_id=stored_session.session_id,
             transcript_path=stored_session.transcript_path,
             summary=summary,
+            highlights=_timed_items(stored_session, "highlight"),
             captions=_timed_items(stored_session, "caption"),
         )
         database.set_session_output(session_id, str(session_md_path.resolve()), "processing")
@@ -265,6 +279,7 @@ def run_ingest_pipeline(
             video_path=video_path,
             transcript=transcript,
             summary=summary,
+            highlights=[(start_sec, text) for start_sec, _end_sec, text in highlights],
             captions=[(start_sec, text) for start_sec, _end_sec, text in captions],
         )
 

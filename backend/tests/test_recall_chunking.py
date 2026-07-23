@@ -34,9 +34,14 @@ def test_chunk_session_document_produces_all_levels(mock_vault_dir: Path) -> Non
     levels = {c.level for c in chunks}
     assert levels == {
         ChunkLevel.SESSION_SUMMARY,
+        ChunkLevel.HIGHLIGHT,
         ChunkLevel.TRANSCRIPT,
         ChunkLevel.SCENE_CAPTION,
     }
+
+    highlight = next(c for c in chunks if c.level is ChunkLevel.HIGHLIGHT)
+    assert highlight.start_sec == 20.0
+    assert highlight.timestamp_label == "[15:00:20]"
 
 
 def test_transcript_chunks_have_absolute_and_relative_timestamps(mock_vault_dir: Path) -> None:

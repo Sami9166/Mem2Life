@@ -18,12 +18,26 @@ import pytest
 
 from recall.classify.question_type import QuestionType
 from recall.pipeline import RecallPipeline
+from recall.search.coarse_to_fine import coarse_to_fine_search
 
 
 @pytest.fixture(scope="module")
 def pipeline(mock_vault_dir: Path, tmp_path_factory: pytest.TempPathFactory) -> RecallPipeline:
     cache_path = tmp_path_factory.mktemp("recall_regression_cache") / "cache.json"
     return RecallPipeline(mock_vault_dir, cache_path=cache_path)
+
+
+def test_highlights_do_not_crowd_out_distinct_sessions(pipeline: RecallPipeline) -> None:
+    result = coarse_to_fine_search(
+        pipeline.index,
+        "민수 부탁",
+        reference_date=date(2026, 7, 18),
+        top_k_session=1,
+        max_chosen_sessions=2,
+    )
+
+    assert len(result.session_evidence) == 1
+    assert len(result.chosen_sessions) == 2
 
 
 # ---------------------------------------------------------------------------

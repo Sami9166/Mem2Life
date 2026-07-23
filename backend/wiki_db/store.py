@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS memory_items (
     id BIGSERIAL PRIMARY KEY,
     session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK (kind IN ('summary', 'transcript', 'caption')),
+    kind TEXT NOT NULL CHECK (kind IN ('summary', 'highlight', 'transcript', 'caption')),
     ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
     content TEXT NOT NULL CHECK (content <> ''),
     speaker TEXT,
@@ -75,9 +75,24 @@ CREATE TABLE IF NOT EXISTS search_items (
     indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (document_id, chunk_id)
 );
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'memory_items'::regclass
+          AND conname = 'memory_items_kind_check'
+          AND pg_get_constraintdef(oid) NOT LIKE '%highlight%'
+    ) THEN
+        ALTER TABLE memory_items DROP CONSTRAINT memory_items_kind_check;
+        ALTER TABLE memory_items ADD CONSTRAINT memory_items_kind_check
+            CHECK (kind IN ('summary', 'highlight', 'transcript', 'caption'));
+    END IF;
+END $$;
 """
 
-_MEMORY_KINDS = {"summary", "transcript", "caption"}
+_MEMORY_KINDS = {"summary", "highlight", "transcript", "caption"}
 
 
 @dataclass(frozen=True, slots=True)
