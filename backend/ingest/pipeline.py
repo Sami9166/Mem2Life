@@ -1,8 +1,11 @@
-"""영상 파일 하나로 기록 파이프라인 전체(오디오 추출 → STT → 세션 md 생성)를
-처음부터 끝까지 실행하는 오케스트레이션 모듈.
+"""영상 파일 하나로 기록 파이프라인 전체(오디오 추출 → STT, 키프레임 추출 →
+세션 md 생성)를 처음부터 끝까지 실행하는 오케스트레이션 모듈.
 
-이번 1단계 프로토타입 범위: 오디오 추출 → STT(화자분리, 스텁) → Obsidian
-세션 md 생성까지. VLM 캡션·LLM 요약·엔티티 페이지 갱신은 다음 단계.
+이번 단계 범위: 오디오 추출 → STT(화자분리, 스텁) → 영상 사건 경계 탐지·
+대표 키프레임 저장(`ingest/visual.py`) → Obsidian 세션 md 생성까지.
+키프레임에 실제 서술을 붙이는 VLM 캡셔닝·LLM 요약·엔티티 페이지 갱신은 다음
+단계 — 그때까지는 저장된 키프레임 이미지를 참조하는 placeholder 캡션으로
+채운다(`_placeholder_captions_from_keyframes`).
 
 API 키 없이 끝까지 성공하는 것이 이번 단계의 핵심 목표이므로, STT는 항상
 스텁(RTZR/Clova 중 선택)을 사용한다.
@@ -36,7 +39,8 @@ from .stt.base import Transcript
 from .stt.factory import DEFAULT_PROVIDER, get_stt_client
 from .stt.rtzr_client import RTZRAPIError
 from .stt.rtzr_stub import RTZRStubClient
-from .wiki.session_md import write_session_md
+from .visual import ProcessedKeyframe, VideoOpenError, VisualProcessingResult, process_video
+from .wiki.session_md import session_filename, write_session_md
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +52,7 @@ class IngestResult:
     session_md_path: Path
     stt_provider: str
     transcript: Transcript
+    visual: VisualProcessingResult
     session_id: str | None = None
     transcript_path: Path | None = None
 
@@ -122,6 +127,25 @@ def _memory_items(
     return tuple(items)
 
 
+def _placeholder_captions_from_keyframes(
+    keyframes: Sequence[ProcessedKeyframe], media_slug: str
+) -> list[tuple[float, float, str]]:
+    """VLM 캡션이 아직 없을 때, 저장된 키프레임 이미지만이라도 볼트에서 바로 보이게 하는 임시 캡션.
+
+    실제 장면 서술(무엇이 찍혔는지)이 아니라 "이 시점에 대표 이미지가 준비돼
+    있다"는 것만 알려주는 placeholder다 — `run_ingest_pipeline`이 호출자로부터
+    실제 `captions`(VLM이 만든 서술문)를 받으면 이 함수는 쓰이지 않는다.
+    """
+    return [
+        (
+            keyframe.timestamp_sec,
+            keyframe.timestamp_sec,
+            f"![[media/{media_slug}/{keyframe.image_path.name}]] — TODO: VLM 캡션 (키프레임 이미지만 준비됨)",
+        )
+        for keyframe in keyframes
+    ]
+
+
 def _transcript_from_session(session: StoredSession) -> Transcript:
     from .stt.base import TranscriptSegment
 
@@ -156,6 +180,8 @@ def run_ingest_pipeline(
     summary: str | None = None,
     highlights: Sequence[tuple[float, float, str]] = (),
     captions: Sequence[tuple[float, float, str]] = (),
+    media_dir: Path | str | None = None,
+    extract_keyframes: bool = True,
 ) -> IngestResult:
     """영상 파일 → 오디오 추출 → STT 스텁 → 세션 md 생성을 순서대로 실행한다.
 
@@ -177,7 +203,13 @@ def run_ingest_pipeline(
             Markdown과 pgvector 검색 색인을 만든다. 생략하면 기존 파일 모드.
         summary: 세션 전체 LLM 요약. 아직 생성되지 않았으면 생략한다.
         highlights: ``(시작 초, 종료 초, 설명)`` 주요 순간 목록.
-        captions: ``(시작 초, 종료 초, 설명)`` VLM 장면 캡션 목록.
+        captions: ``(시작 초, 종료 초, 설명)`` VLM 장면 캡션 목록. 생략하면(빈
+            시퀀스) `extract_keyframes`로 뽑은 키프레임 이미지를 참조하는
+            placeholder 캡션으로 자동 채운다(실제 VLM 서술은 아직 없음을
+            명시하는 TODO 문구 포함).
+        media_dir: 키프레임 이미지를 저장할 디렉토리. 생략 시 `vault_dir/media`.
+        extract_keyframes: False면 `ingest/visual.py`의 사건 경계 탐지·키프레임
+            저장을 건너뛴다(오디오/STT만 실행).
 
     Returns:
         IngestResult: 생성된 세션 md 경로 등 실행 결과.
@@ -219,6 +251,35 @@ def run_ingest_pipeline(
 
     resolved_participants = list(participants) if participants else (transcript.speakers or ["화자1"])
 
+    # 세션 md 파일명과 같은 이름을 미디어 서브디렉토리로 써서, 서로 다른 세션의
+    # 키프레임이 같은 media_dir 아래에서도 파일명 충돌 없이 저장되게 한다.
+    media_slug = Path(session_filename(resolved_start, title)).stem
+    resolved_media_dir = Path(media_dir) if media_dir is not None else vault_dir / "media"
+
+    if extract_keyframes:
+        try:
+            visual_result = process_video(
+                video_path,
+                media_dir=resolved_media_dir,
+                session_id=media_slug,
+            )
+        except VideoOpenError as exc:
+            # STT의 RTZRAPIError 처리와 같은 원칙 — 영상 처리 하나가 실패해도
+            # 세션 md 생성 자체는 끝까지 진행시킨다(경고만 출력).
+            print(
+                f"[경고] 키프레임 추출에 실패해 이번 세션은 장면 캡션 이미지 없이 진행합니다: {exc}",
+                file=sys.stderr,
+            )
+            visual_result = VisualProcessingResult(session_duration_sec=extracted.duration_sec)
+    else:
+        visual_result = VisualProcessingResult(session_duration_sec=extracted.duration_sec)
+
+    resolved_captions = (
+        list(captions)
+        if captions
+        else _placeholder_captions_from_keyframes(visual_result.processed_keyframes, media_slug)
+    )
+
     session_id: str | None = None
     transcript_path: Path | None = None
     if database_url:
@@ -241,7 +302,7 @@ def run_ingest_pipeline(
             markdown_path=None,
             stt_provider=transcript.provider,
             status="processing",
-            items=_memory_items(transcript, summary, highlights, captions),
+            items=_memory_items(transcript, summary, highlights, resolved_captions),
         )
         database.save_session(stored_session)
 
@@ -280,7 +341,7 @@ def run_ingest_pipeline(
             transcript=transcript,
             summary=summary,
             highlights=[(start_sec, text) for start_sec, _end_sec, text in highlights],
-            captions=[(start_sec, text) for start_sec, _end_sec, text in captions],
+            captions=[(start_sec, text) for start_sec, _end_sec, text in resolved_captions],
         )
 
     if not keep_audio:
@@ -292,6 +353,7 @@ def run_ingest_pipeline(
         session_md_path=session_md_path,
         stt_provider=transcript.provider,
         transcript=transcript,
+        visual=visual_result,
         session_id=session_id,
         transcript_path=transcript_path,
     )

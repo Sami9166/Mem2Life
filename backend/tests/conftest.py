@@ -96,6 +96,45 @@ def dummy_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture(scope="session")
+def dummy_video_with_scene_change(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """앞 1.5초는 파란 화면, 뒤 1.5초는 빨간 화면인 더미 mp4(10fps, 무음).
+
+    `ingest/visual.py`의 사건 경계 탐지를 검증하려고 t=1.5s 부근에 뚜렷한
+    장면 전환을 하나 심어둔 결정적(deterministic) 픽스처다.
+    """
+    if not _ffmpeg_available():
+        pytest.skip("ffmpeg/ffprobe가 설치돼 있지 않습니다 (brew install ffmpeg)")
+
+    out_dir = tmp_path_factory.mktemp("dummy_video_scene_change")
+    video_path = out_dir / "dummy_session_scene_change.mp4"
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=blue:s=320x240:d=1.5:r=10",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=red:s=320x240:d=1.5:r=10",
+        "-filter_complex",
+        "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+        "-map",
+        "[v]",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        str(video_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"장면 전환 더미 영상 생성 실패:\n{result.stderr}")
+    return video_path
+
+
+@pytest.fixture(scope="session")
 def dummy_video_no_audio(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """오디오 트랙이 아예 없는 더미 mp4 (색상 패턴만, 오디오 입력 없음)."""
     if not _ffmpeg_available():
