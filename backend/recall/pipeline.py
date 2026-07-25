@@ -116,6 +116,12 @@ class RecallPipeline:
         database_url: str | None = None,
     ) -> None:
         self.index: VaultIndex | PostgresIndex
+        # database_url을 지정했는데 연결 실패로 파일 모드로 대체된 경우에만
+        # True. 서버가 오래 떠 있는 동안(`serve`) 지금 어느 모드로 동작
+        # 중인지 재시작·로그 확인 없이도 알 수 있도록 `/health`에서 그대로
+        # 노출한다(index_mode 프로퍼티 참고).
+        self.database_fallback = False
+        self.database_fallback_detail: str | None = None
         if database_url:
             try:
                 self.index = build_postgres_index(
@@ -127,6 +133,8 @@ class RecallPipeline:
                 # ingest/pipeline.py와 동일한 원칙: PostgreSQL 연결 자체가
                 # 실패해도(서버 미기동 등) 서버·CLI가 죽는 대신 기존
                 # 파일/캐시 기반 인덱스로 전환해 질의응답을 계속한다.
+                self.database_fallback = True
+                self.database_fallback_detail = str(exc)
                 print(
                     f"[경고] PostgreSQL 연결에 실패해 기존 파일/캐시 기반 검색 인덱스로 대체합니다: {exc}",
                     file=sys.stderr,
@@ -139,6 +147,11 @@ class RecallPipeline:
         self.classifier = get_question_classifier(classifier_provider)
         self.answer_generator = get_answer_generator(answer_provider)
         self.video_requery_client: VideoRequeryClient = video_requery_client or StubVideoRequeryClient()
+
+    @property
+    def index_mode(self) -> str:
+        """현재 검색 인덱스가 어디서 오는지 — `/health`에서 그대로 노출."""
+        return "postgres" if isinstance(self.index, PostgresIndex) else "file"
 
     def refresh_index(self) -> RefreshStats:
         """볼트 변경분만 다시 인덱싱한다 (위키 파일 변경 감지 시 호출)."""

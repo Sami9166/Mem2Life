@@ -147,11 +147,23 @@ def test_run_ingest_pipeline_falls_back_to_file_mode_when_postgres_unreachable(
 
     assert result.session_md_path.exists()
     assert result.session_id is None  # DB 실패했으니 파일 모드로 대체됨
+    assert result.database_fallback is True  # database_url을 아예 안 준 것과 구분되는 신호
     assert "민수와 제주도 여행 계획을 논의했다." in result.session_md_path.read_text(encoding="utf-8")
 
     warning = capsys.readouterr().err
     assert "[경고]" in warning
     assert "PostgreSQL 연결에 실패" in warning
+
+
+def test_run_ingest_pipeline_database_fallback_is_false_in_normal_file_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    dummy_video: Path,
+    tmp_path: Path,
+) -> None:
+    """database_url을 아예 안 준 정상 파일 모드는 database_fallback=False여야
+    한다 — True가 "DB를 시도했다가 실패"만을 의미하도록 구분을 지킨다."""
+    result = run_ingest_pipeline(dummy_video, tmp_path / "vault")
+    assert result.database_fallback is False
 
 
 def test_recall_pipeline_falls_back_to_file_index_when_postgres_unreachable(
@@ -171,9 +183,38 @@ def test_recall_pipeline_falls_back_to_file_index_when_postgres_unreachable(
     )
 
     assert isinstance(pipeline.index, VaultIndex)
+    assert pipeline.index_mode == "file"
+    assert pipeline.database_fallback is True
+    assert pipeline.database_fallback_detail is not None
     warning = capsys.readouterr().err
     assert "[경고]" in warning
     assert "PostgreSQL 연결에 실패" in warning
+
+
+def test_recall_pipeline_health_endpoint_reports_fallback_when_postgres_unreachable(
+    mock_vault_dir: Path, tmp_path: Path
+) -> None:
+    """`/health`로 재시작·로그 확인 없이 지금 파일 모드로 대체됐는지 바로
+    확인할 수 있어야 한다 (관측 가능성 보완, 블로커 회귀 테스트 연장)."""
+    from fastapi.testclient import TestClient
+
+    from recall.api import create_app
+    from recall.pipeline import RecallPipeline
+
+    pipeline = RecallPipeline(
+        mock_vault_dir,
+        cache_path=tmp_path / "cache.json",
+        database_url=_UNREACHABLE_DATABASE_URL,
+    )
+    client = TestClient(create_app(pipeline))
+
+    resp = client.get("/health")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["index_mode"] == "file"
+    assert body["database_fallback"] is True
+    assert body["database_fallback_detail"]
 
 
 def test_index_markdown_file_creates_all_session_vectors(tmp_path: Path) -> None:

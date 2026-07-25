@@ -57,6 +57,11 @@ class IngestResult:
     transcript: Transcript
     session_id: str | None = None
     transcript_path: Path | None = None
+    # database_url을 지정했는데 PostgreSQL 연결 실패로 파일 모드로 대체된
+    # 경우에만 True. database_url을 처음부터 안 준 경우(정상 파일 모드)와
+    # 구분하는 용도 — 둘 다 session_id is None이라 그것만으론 "DB를
+    # 시도했다가 실패"인지 구별이 안 된다.
+    database_fallback: bool = False
 
 
 def _write_transcript_json(path: Path, transcript: Transcript) -> None:
@@ -228,6 +233,7 @@ def run_ingest_pipeline(
 
     session_id: str | None = None
     transcript_path: Path | None = None
+    database_fallback = False
     if database_url:
         try:
             from recall.index.postgres_store import index_markdown_file
@@ -294,6 +300,7 @@ def run_ingest_pipeline(
             database_url = None
             session_id = None
             transcript_path = None
+            database_fallback = True
 
     if not database_url:
         session_md_path = write_session_md(
@@ -319,4 +326,5 @@ def run_ingest_pipeline(
         transcript=transcript,
         session_id=session_id,
         transcript_path=transcript_path,
+        database_fallback=database_fallback,
     )
