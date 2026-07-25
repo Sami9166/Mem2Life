@@ -10,6 +10,7 @@ import ingest.pipeline as pipeline_module
 from ingest.audio import ExtractedAudio
 from ingest.pipeline import run_ingest_pipeline
 from ingest.stt.base import Transcript, TranscriptSegment
+from ingest.visual import VisualProcessingResult
 from recall.index.postgres_store import PostgresIndex, index_markdown_file
 from wiki_db import StoredSession
 from wiki_db.store import VECTOR_DIM, _vector_literal
@@ -68,6 +69,14 @@ def test_ingest_db_flow_reads_db_before_markdown_and_indexes_it(
         pipeline_module,
         "get_stt_client",
         lambda provider: type("_Client", (), {"transcribe": lambda self, path: transcript})(),
+    )
+    # 이 테스트는 DB -> Markdown -> 색인 순서만 검증하므로, 실제로 디코딩할
+    # 수 없는 가짜 video.mp4(b"fake video")를 열어야 하는 실제 키프레임 추출은
+    # extract_audio/get_stt_client와 같은 원칙으로 우회한다.
+    monkeypatch.setattr(
+        pipeline_module,
+        "process_video",
+        lambda video_path, *, media_dir, session_id: VisualProcessingResult(session_duration_sec=5.0),
     )
 
     result = run_ingest_pipeline(
@@ -307,6 +316,11 @@ def test_real_postgres_ingest_markdown_index_and_search(
         pipeline_module,
         "get_stt_client",
         lambda provider: type("_Client", (), {"transcribe": lambda self, path: transcript})(),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "process_video",
+        lambda video_path, *, media_dir, session_id: VisualProcessingResult(session_duration_sec=5.0),
     )
 
     result = run_ingest_pipeline(

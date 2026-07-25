@@ -128,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[완료] 전사록 발화 수  : {len(result.transcript.segments)}")
     print(f"[완료] 감지된 화자     : {', '.join(result.transcript.speakers)}")
     print(f"[완료] 세션 md 생성    : {result.session_md_path}")
+    print(f"[완료] 추출된 키프레임 : {len(result.visual.processed_keyframes)}개")
     if result.session_id:
         print(f"[완료] DB 세션 ID      : {result.session_id}")
         print(f"[완료] 전사록 원본     : {result.transcript_path}")
