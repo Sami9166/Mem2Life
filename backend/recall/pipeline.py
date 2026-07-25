@@ -9,13 +9,21 @@
 
 API 키 없이 끝까지 동작하는 것이 1단계 목표이므로 기본 provider는 모두
 오프라인 스텁(임베딩=해시, 답변생성=템플릿, 질문분류=키워드)이다.
+
+`database_url`을 지정했는데 PostgreSQL 연결 자체가 실패하면
+(`psycopg.OperationalError`) `ingest/pipeline.py`와 동일한 원칙으로
+기존 파일/캐시 기반 인덱스로 전환한다 — `serve` 서브커맨드가 uvicorn
+기동 전에 죽어버리는 것을 막기 위한 것이 특히 중요하다.
 """
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from datetime import date as date_type
 from pathlib import Path
+
+import psycopg
 
 from .answer.base import AnswerResult, Citation
 from .answer.factory import DEFAULT_PROVIDER as DEFAULT_ANSWER_PROVIDER
@@ -108,17 +116,42 @@ class RecallPipeline:
         database_url: str | None = None,
     ) -> None:
         self.index: VaultIndex | PostgresIndex
+        # database_url을 지정했는데 연결 실패로 파일 모드로 대체된 경우에만
+        # True. 서버가 오래 떠 있는 동안(`serve`) 지금 어느 모드로 동작
+        # 중인지 재시작·로그 확인 없이도 알 수 있도록 `/health`에서 그대로
+        # 노출한다(index_mode 프로퍼티 참고).
+        self.database_fallback = False
+        self.database_fallback_detail: str | None = None
         if database_url:
-            self.index = build_postgres_index(
-                database_url,
-                vault_dir,
-                embedding_provider=embedding_provider,
-            )
+            try:
+                self.index = build_postgres_index(
+                    database_url,
+                    vault_dir,
+                    embedding_provider=embedding_provider,
+                )
+            except psycopg.OperationalError as exc:
+                # ingest/pipeline.py와 동일한 원칙: PostgreSQL 연결 자체가
+                # 실패해도(서버 미기동 등) 서버·CLI가 죽는 대신 기존
+                # 파일/캐시 기반 인덱스로 전환해 질의응답을 계속한다.
+                self.database_fallback = True
+                self.database_fallback_detail = str(exc)
+                print(
+                    f"[경고] PostgreSQL 연결에 실패해 기존 파일/캐시 기반 검색 인덱스로 대체합니다: {exc}",
+                    file=sys.stderr,
+                )
+                self.index = build_index(
+                    vault_dir, cache_path=cache_path, embedding_provider=embedding_provider
+                )
         else:
             self.index = build_index(vault_dir, cache_path=cache_path, embedding_provider=embedding_provider)
         self.classifier = get_question_classifier(classifier_provider)
         self.answer_generator = get_answer_generator(answer_provider)
         self.video_requery_client: VideoRequeryClient = video_requery_client or StubVideoRequeryClient()
+
+    @property
+    def index_mode(self) -> str:
+        """현재 검색 인덱스가 어디서 오는지 — `/health`에서 그대로 노출."""
+        return "postgres" if isinstance(self.index, PostgresIndex) else "file"
 
     def refresh_index(self) -> RefreshStats:
         """볼트 변경분만 다시 인덱싱한다 (위키 파일 변경 감지 시 호출)."""

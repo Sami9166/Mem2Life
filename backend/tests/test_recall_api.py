@@ -52,3 +52,11 @@ def test_query_endpoint_visual_question_triggers_fallback(client: TestClient) ->
 def test_query_endpoint_missing_question_is_422(client: TestClient) -> None:
     resp = client.post("/recall/query", json={})
     assert resp.status_code == 422
+
+
+def test_health_endpoint_reports_file_mode_when_no_database_configured(client: TestClient) -> None:
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["index_mode"] == "file"
+    assert body["database_fallback"] is False

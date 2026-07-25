@@ -104,6 +104,119 @@ def test_ingest_db_flow_reads_db_before_markdown_and_indexes_it(
     assert "제주도 여행 책자가 보인다." in markdown
 
 
+# 실제로 연결이 안 되는(닫힌) 포트 — mock이 아니라 psycopg가 진짜
+# OperationalError를 던지게 해서 폴백 경로를 검증한다. 실 PostgreSQL 설치는
+# 필요 없다(TCP 연결 거부는 즉시 발생하며 네트워크 접근도 없음).
+_UNREACHABLE_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:1/mem2life"
+
+
+def test_run_ingest_pipeline_falls_back_to_file_mode_when_postgres_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """PostgreSQL 연결 자체가 실패해도(서버 미기동 등) RTZR API 실패와 동일한
+    원칙으로 세션 md 생성까지는 끝까지 진행해야 한다 (블로커 회귀 테스트)."""
+    video = tmp_path / "session.mp4"
+    audio = tmp_path / "session.wav"
+    video.write_bytes(b"fake video")
+    audio.write_bytes(b"fake audio")
+    transcript = Transcript(
+        segments=[TranscriptSegment(0.0, 5.0, "민수", "숙소는 서귀포로 알아보자.")],
+        provider="test-stt",
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "extract_audio",
+        lambda video_path, output_path: ExtractedAudio(audio, 16_000, 1, 5.0),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "get_stt_client",
+        lambda provider: type("_Client", (), {"transcribe": lambda self, path: transcript})(),
+    )
+
+    result = run_ingest_pipeline(
+        video,
+        tmp_path / "vault",
+        title="DB 장애",
+        session_start=datetime(2026, 7, 22, 14, 0),
+        database_url=_UNREACHABLE_DATABASE_URL,
+        summary="민수와 제주도 여행 계획을 논의했다.",
+    )
+
+    assert result.session_md_path.exists()
+    assert result.session_id is None  # DB 실패했으니 파일 모드로 대체됨
+    assert result.database_fallback is True  # database_url을 아예 안 준 것과 구분되는 신호
+    assert "민수와 제주도 여행 계획을 논의했다." in result.session_md_path.read_text(encoding="utf-8")
+
+    warning = capsys.readouterr().err
+    assert "[경고]" in warning
+    assert "PostgreSQL 연결에 실패" in warning
+
+
+def test_run_ingest_pipeline_database_fallback_is_false_in_normal_file_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    dummy_video: Path,
+    tmp_path: Path,
+) -> None:
+    """database_url을 아예 안 준 정상 파일 모드는 database_fallback=False여야
+    한다 — True가 "DB를 시도했다가 실패"만을 의미하도록 구분을 지킨다."""
+    result = run_ingest_pipeline(dummy_video, tmp_path / "vault")
+    assert result.database_fallback is False
+
+
+def test_recall_pipeline_falls_back_to_file_index_when_postgres_unreachable(
+    mock_vault_dir: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`mem2life-recall serve`가 uvicorn 기동 전에(=`RecallPipeline` 생성
+    시점에) DB 장애로 죽어버리는 것을 막는다 (블로커 회귀 테스트)."""
+    from recall.index.store import VaultIndex
+    from recall.pipeline import RecallPipeline
+
+    pipeline = RecallPipeline(
+        mock_vault_dir,
+        cache_path=tmp_path / "cache.json",
+        database_url=_UNREACHABLE_DATABASE_URL,
+    )
+
+    assert isinstance(pipeline.index, VaultIndex)
+    assert pipeline.index_mode == "file"
+    assert pipeline.database_fallback is True
+    assert pipeline.database_fallback_detail is not None
+    warning = capsys.readouterr().err
+    assert "[경고]" in warning
+    assert "PostgreSQL 연결에 실패" in warning
+
+
+def test_recall_pipeline_health_endpoint_reports_fallback_when_postgres_unreachable(
+    mock_vault_dir: Path, tmp_path: Path
+) -> None:
+    """`/health`로 재시작·로그 확인 없이 지금 파일 모드로 대체됐는지 바로
+    확인할 수 있어야 한다 (관측 가능성 보완, 블로커 회귀 테스트 연장)."""
+    from fastapi.testclient import TestClient
+
+    from recall.api import create_app
+    from recall.pipeline import RecallPipeline
+
+    pipeline = RecallPipeline(
+        mock_vault_dir,
+        cache_path=tmp_path / "cache.json",
+        database_url=_UNREACHABLE_DATABASE_URL,
+    )
+    client = TestClient(create_app(pipeline))
+
+    resp = client.get("/health")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["index_mode"] == "file"
+    assert body["database_fallback"] is True
+    assert body["database_fallback_detail"]
+
+
 def test_index_markdown_file_creates_all_session_vectors(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     sessions = vault / "sessions"
