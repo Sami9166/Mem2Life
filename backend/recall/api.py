@@ -53,6 +53,16 @@ class RecallQueryResponse(BaseModel):
     fallback: FallbackOut
 
 
+class HealthResponse(BaseModel):
+    """서버가 현재 pgvector로 동작 중인지, DB 장애로 파일 모드로 내려가
+    있는지 재시작·로그 확인 없이 바로 확인하기 위한 상태 엔드포인트."""
+
+    status: str = "ok"
+    index_mode: str
+    database_fallback: bool
+    database_fallback_detail: str | None = None
+
+
 def create_recall_router(pipeline: RecallPipeline) -> APIRouter:
     """주어진 `pipeline`에 바인딩된 `/recall/query` 라우터를 만든다.
 
@@ -90,4 +100,17 @@ def create_app(pipeline: RecallPipeline) -> FastAPI:
     """단독 실행용 FastAPI 앱 (`cli.py serve`에서 사용)."""
     app = FastAPI(title="Mem2Life Recall API", version="0.1.0")
     app.include_router(create_recall_router(pipeline))
+
+    @app.get("/health", response_model=HealthResponse)
+    def health() -> HealthResponse:
+        # PostgreSQL 연결 실패는 서버 기동 시(RecallPipeline 생성 시점)
+        # 한 번만 조용히 파일 모드로 대체되므로, 재시작하거나 그때의 stderr
+        # 로그를 다시 찾아보지 않는 한 지금 서버가 어느 모드로 떠 있는지
+        # 알 방법이 없었다 — 이 엔드포인트가 그 상태를 언제든 확인시켜준다.
+        return HealthResponse(
+            index_mode=pipeline.index_mode,
+            database_fallback=pipeline.database_fallback,
+            database_fallback_detail=pipeline.database_fallback_detail,
+        )
+
     return app

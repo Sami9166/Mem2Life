@@ -132,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
     if result.session_id:
         print(f"[완료] DB 세션 ID      : {result.session_id}")
         print(f"[완료] 전사록 원본     : {result.transcript_path}")
+    elif result.database_fallback:
+        # 중간 stderr 경고만으로는 스크롤에 묻혀 놓치기 쉬우므로, 마지막
+        # 요약 줄에도 눈에 띄게 다시 남긴다 — DB 저장이 조용히 빠졌다는
+        # 사실을 실행 끝까지 보지 않아도 알 수 있게 하는 것이 목적.
+        print("[경고] DB 저장 실패 — 이번 세션은 파일 모드로만 저장됨 (위 경고 참고)")
     return 0
 
 
