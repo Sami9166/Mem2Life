@@ -17,6 +17,11 @@ API 키 없이 끝까지 성공하는 것이 이번 단계의 핵심 목표이�
 `stt.factory._build_rtzr_client()`가 생성 시점에 스텁으로 대체하므로 이
 지점까지 올라오지 않아야 하고, 만약 올라온다면 설정 문제이지 일시적
 장애가 아니므로 그대로 실패시켜 사용자가 인지하게 한다.
+
+`database_url`을 지정했는데 PostgreSQL 연결 자체가 실패하는 경우
+(`psycopg.OperationalError` — 서버 미기동, 네트워크 문제 등)도 같은
+원칙을 따른다: 전체 실행을 중단하는 대신 DB 없이 기존 파일 모드로
+전환해 세션 md 생성까지는 끝까지 진행한다.
 """
 
 from __future__ import annotations
@@ -28,6 +33,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
+
+import psycopg
 
 from wiki_db import MemoryItem, StoredSession, WikiDatabase
 
@@ -222,55 +229,73 @@ def run_ingest_pipeline(
     session_id: str | None = None
     transcript_path: Path | None = None
     if database_url:
-        from recall.index.postgres_store import index_markdown_file
+        try:
+            from recall.index.postgres_store import index_markdown_file
 
-        database = WikiDatabase(database_url)
-        database.initialize()
-        session_id = str(uuid4())
-        transcript_path = vault_dir.resolve().parent / "data" / "sessions" / session_id / "transcript.json"
-        _write_transcript_json(transcript_path, transcript)
+            database = WikiDatabase(database_url)
+            database.initialize()
+            session_id = str(uuid4())
+            transcript_path = (
+                vault_dir.resolve().parent / "data" / "sessions" / session_id / "transcript.json"
+            )
+            _write_transcript_json(transcript_path, transcript)
 
-        stored_session = StoredSession(
-            session_id=session_id,
-            title=title,
-            started_at=resolved_start,
-            ended_at=resolved_start + timedelta(seconds=transcript.duration_sec),
-            participants=tuple(resolved_participants),
-            video_path=str(video_path),
-            transcript_path=str(transcript_path),
-            markdown_path=None,
-            stt_provider=transcript.provider,
-            status="processing",
-            items=_memory_items(transcript, summary, highlights, captions),
-        )
-        database.save_session(stored_session)
+            stored_session = StoredSession(
+                session_id=session_id,
+                title=title,
+                started_at=resolved_start,
+                ended_at=resolved_start + timedelta(seconds=transcript.duration_sec),
+                participants=tuple(resolved_participants),
+                video_path=str(video_path),
+                transcript_path=str(transcript_path),
+                markdown_path=None,
+                stt_provider=transcript.provider,
+                status="processing",
+                items=_memory_items(transcript, summary, highlights, captions),
+            )
+            database.save_session(stored_session)
 
-        # DB가 원본이다. 바로 위의 로컬 객체를 재사용하지 않고 DB에서 다시
-        # 읽은 값으로 Markdown을 만들어 저장 방향(DB -> md)을 고정한다.
-        stored_session = database.load_session(session_id)
-        stored_transcript = _transcript_from_session(stored_session)
-        summary = next(
-            (item.content for item in stored_session.items if item.kind == "summary"),
-            None,
-        )
-        session_md_path = write_session_md(
-            vault_dir,
-            session_start=stored_session.started_at,
-            session_end=stored_session.ended_at,
-            title=stored_session.title,
-            participants=stored_session.participants,
-            video_path=stored_session.video_path,
-            transcript=stored_transcript,
-            session_id=stored_session.session_id,
-            transcript_path=stored_session.transcript_path,
-            summary=summary,
-            highlights=_timed_items(stored_session, "highlight"),
-            captions=_timed_items(stored_session, "caption"),
-        )
-        database.set_session_output(session_id, str(session_md_path.resolve()), "processing")
-        index_markdown_file(database, vault_dir, session_md_path, session_id=session_id)
-        database.set_session_output(session_id, str(session_md_path.resolve()), "ready")
-    else:
+            # DB가 원본이다. 바로 위의 로컬 객체를 재사용하지 않고 DB에서 다시
+            # 읽은 값으로 Markdown을 만들어 저장 방향(DB -> md)을 고정한다.
+            stored_session = database.load_session(session_id)
+            stored_transcript = _transcript_from_session(stored_session)
+            summary = next(
+                (item.content for item in stored_session.items if item.kind == "summary"),
+                None,
+            )
+            session_md_path = write_session_md(
+                vault_dir,
+                session_start=stored_session.started_at,
+                session_end=stored_session.ended_at,
+                title=stored_session.title,
+                participants=stored_session.participants,
+                video_path=stored_session.video_path,
+                transcript=stored_transcript,
+                session_id=stored_session.session_id,
+                transcript_path=stored_session.transcript_path,
+                summary=summary,
+                highlights=_timed_items(stored_session, "highlight"),
+                captions=_timed_items(stored_session, "caption"),
+            )
+            database.set_session_output(session_id, str(session_md_path.resolve()), "processing")
+            index_markdown_file(database, vault_dir, session_md_path, session_id=session_id)
+            database.set_session_output(session_id, str(session_md_path.resolve()), "ready")
+        except psycopg.OperationalError as exc:
+            # PostgreSQL 연결 자체가 안 되는 경우(서버 미기동, 네트워크 문제 등).
+            # RTZR API 실패와 동일한 원칙 — 데모 도중 전체 실행이 죽는 대신
+            # 기존 파일 모드로 계속 진행한다(경고 메시지 출력, 나중에 재처리 권장).
+            print(
+                "[경고] PostgreSQL 연결에 실패해 이번 세션은 DB 대신 기존 "
+                f"파일 모드로 대체합니다: {exc}\n"
+                "        DB가 복구되면 이 영상으로 다시 실행해 재처리하는 "
+                "것을 권장합니다.",
+                file=sys.stderr,
+            )
+            database_url = None
+            session_id = None
+            transcript_path = None
+
+    if not database_url:
         session_md_path = write_session_md(
             vault_dir,
             session_start=resolved_start,

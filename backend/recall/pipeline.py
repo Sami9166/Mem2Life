@@ -9,13 +9,21 @@
 
 API 키 없이 끝까지 동작하는 것이 1단계 목표이므로 기본 provider는 모두
 오프라인 스텁(임베딩=해시, 답변생성=템플릿, 질문분류=키워드)이다.
+
+`database_url`을 지정했는데 PostgreSQL 연결 자체가 실패하면
+(`psycopg.OperationalError`) `ingest/pipeline.py`와 동일한 원칙으로
+기존 파일/캐시 기반 인덱스로 전환한다 — `serve` 서브커맨드가 uvicorn
+기동 전에 죽어버리는 것을 막기 위한 것이 특히 중요하다.
 """
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from datetime import date as date_type
 from pathlib import Path
+
+import psycopg
 
 from .answer.base import AnswerResult, Citation
 from .answer.factory import DEFAULT_PROVIDER as DEFAULT_ANSWER_PROVIDER
@@ -109,11 +117,23 @@ class RecallPipeline:
     ) -> None:
         self.index: VaultIndex | PostgresIndex
         if database_url:
-            self.index = build_postgres_index(
-                database_url,
-                vault_dir,
-                embedding_provider=embedding_provider,
-            )
+            try:
+                self.index = build_postgres_index(
+                    database_url,
+                    vault_dir,
+                    embedding_provider=embedding_provider,
+                )
+            except psycopg.OperationalError as exc:
+                # ingest/pipeline.py와 동일한 원칙: PostgreSQL 연결 자체가
+                # 실패해도(서버 미기동 등) 서버·CLI가 죽는 대신 기존
+                # 파일/캐시 기반 인덱스로 전환해 질의응답을 계속한다.
+                print(
+                    f"[경고] PostgreSQL 연결에 실패해 기존 파일/캐시 기반 검색 인덱스로 대체합니다: {exc}",
+                    file=sys.stderr,
+                )
+                self.index = build_index(
+                    vault_dir, cache_path=cache_path, embedding_provider=embedding_provider
+                )
         else:
             self.index = build_index(vault_dir, cache_path=cache_path, embedding_provider=embedding_provider)
         self.classifier = get_question_classifier(classifier_provider)
