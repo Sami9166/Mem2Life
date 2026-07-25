@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -53,6 +54,15 @@ class VideoChunkEncoder(
     private var muxer: MediaMuxer? = null
     private var muxerTrackIndex = -1
     private var muxerStarted = false
+
+    // MediaCodec은 INFO_OUTPUT_FORMAT_CHANGED를 코덱 수명당 딱 한 번만 낸다.
+    // 청크 로테이션으로 새 muxer를 열 때마다 이 이벤트를 다시 기다릴 수 없으므로
+    // 최초 1회 받은 출력 포맷을 캐시해 두고, 2번째 청크부터는 이 포맷으로 즉시
+    // 트랙을 추가/시작한다. (이게 없으면 seq>=1 청크가 전부 0바이트가 됐다.)
+    private var cachedOutputFormat: MediaFormat? = null
+
+    /** 현재 청크에 muxer로 실제 기록한 바이트 수(진단용 — 0이면 프레임/인코딩 경로 문제). */
+    private var currentChunkBytesWritten: Long = 0
 
     private var currentSeq = 0
     private var currentChunkFile: File? = null
@@ -127,15 +137,26 @@ class VideoChunkEncoder(
         pendingFrames.offer(QueuedFrame(data, presentationTimeUs))
     }
 
-    /** 세션 종료 시 호출. 남은 프레임을 flush하고 마지막 청크를 마무리해 콜백한다. */
-    fun stop() {
+    /**
+     * 세션 종료 시 호출. 남은 프레임을 flush하고 마지막 청크를 마무리해 콜백한다.
+     *
+     * suspend인 이유: drainJob(드레인 코루틴)이 [codec]을 실제로 쓰는 유일한 다른
+     * 스레드다. `cancel()`만으로는 즉시 멈추지 않아, 그 코루틴이 dequeueOutputBuffer를
+     * 실행 중인데 이 함수가 encoder.stop()/release()를 호출하면 해제된 코덱에 접근해
+     * IllegalStateException으로 프로세스가 죽는다. cancelAndJoin으로 드레인 코루틴이
+     * 완전히 종료된 뒤에만 코덱을 정지/해제한다.
+     */
+    suspend fun stop() {
         running = false
-        drainJob?.cancel()
+        drainJob?.cancelAndJoin()
         drainJob = null
 
         val encoder = codec
         try {
-            encoder?.signalEndOfInputStream()
+            // byte-buffer 입력 모드에서는 EOS를 빈 입력 버퍼 + BUFFER_FLAG_END_OF_STREAM로
+            // 알린다. signalEndOfInputStream()은 Surface 입력 모드 전용이라 여기서
+            // 부르면 IllegalStateException이 난다(그래서 마지막 청크가 flush되지 않았다).
+            encoder?.let { queueEndOfStream(it) }
             encoder?.let { drainOutput(it, endOfStream = true) }
             encoder?.stop()
             encoder?.release()
@@ -204,6 +225,22 @@ class VideoChunkEncoder(
         encoder.queueInputBuffer(inputIndex, 0, frame.data.size, relativeUs, 0)
     }
 
+    /** byte-buffer 입력 모드의 EOS 신호: 빈 입력 버퍼에 END_OF_STREAM 플래그를 실어 넣는다. */
+    private fun queueEndOfStream(encoder: MediaCodec) {
+        val inputIndex = encoder.dequeueInputBuffer(INPUT_TIMEOUT_US)
+        if (inputIndex < 0) {
+            Log.w(TAG, "EOS 입력 버퍼를 얻지 못함 — 마지막 프레임 일부가 누락될 수 있음")
+            return
+        }
+        encoder.queueInputBuffer(
+            inputIndex,
+            0,
+            0,
+            lastQueuedRelativeUs,
+            MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+        )
+    }
+
     private fun drainOutput(encoder: MediaCodec, endOfStream: Boolean = false) {
         val bufferInfo = MediaCodec.BufferInfo()
         while (true) {
@@ -213,10 +250,14 @@ class VideoChunkEncoder(
                     if (!endOfStream) return
                 }
                 outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    val format = encoder.outputFormat
+                    cachedOutputFormat = format
                     val currentMuxer = muxer ?: return
-                    muxerTrackIndex = currentMuxer.addTrack(encoder.outputFormat)
-                    currentMuxer.start()
-                    muxerStarted = true
+                    if (!muxerStarted) {
+                        muxerTrackIndex = currentMuxer.addTrack(format)
+                        currentMuxer.start()
+                        muxerStarted = true
+                    }
                 }
                 outputIndex >= 0 -> {
                     val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
@@ -228,6 +269,7 @@ class VideoChunkEncoder(
                     val isConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
                     if (outputBuffer != null && bufferInfo.size > 0 && !isConfig && muxerStarted) {
                         muxer?.writeSampleData(muxerTrackIndex, outputBuffer, bufferInfo)
+                        currentChunkBytesWritten += bufferInfo.size
                     }
                     encoder.releaseOutputBuffer(outputIndex, false)
                     if (endOfStream && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
@@ -243,8 +285,17 @@ class VideoChunkEncoder(
         val fileName = "chunk_%06d.mp4".format(currentSeq)
         val file = File(outputDir, fileName)
         currentChunkFile = file
-        muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        val newMuxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        muxer = newMuxer
         muxerStarted = false
+        // 2번째 이후 청크: 출력 포맷은 이미 알고 있으므로(캐시) 즉시 트랙 추가/시작.
+        // 첫 청크는 아직 포맷을 모르므로 drainOutput의 INFO_OUTPUT_FORMAT_CHANGED에서 시작된다.
+        val format = cachedOutputFormat
+        if (format != null) {
+            muxerTrackIndex = newMuxer.addTrack(format)
+            newMuxer.start()
+            muxerStarted = true
+        }
         Log.i(
             TAG,
             "새 청크 시작: seq=$currentSeq file=${file.name} startTs=${currentChunkStartRelativeUs / 1_000_000.0}s",
@@ -259,6 +310,7 @@ class VideoChunkEncoder(
             (newChunkFirstFrameRelativeUs - currentChunkStartRelativeUs) / 1_000_000.0
 
         finalizeMuxerOnly()
+        Log.i(TAG, "청크 마감: seq=$finishedSeq 기록바이트=$currentChunkBytesWritten")
 
         if (finishedFile != null) {
             onChunkReady(
@@ -273,6 +325,7 @@ class VideoChunkEncoder(
 
         currentSeq += 1
         pendingRotation = false
+        currentChunkBytesWritten = 0
         currentChunkStartRelativeUs = newChunkFirstFrameRelativeUs
         startNewChunk()
     }

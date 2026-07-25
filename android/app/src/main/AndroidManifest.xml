@@ -24,12 +24,17 @@
          조작한다. touchscreen 미요구 선언이 없으면 설치가 거부될 수 있다. -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
+    <!-- 백엔드는 LAN HTTP(사용자가 설정 화면에서 host/port를 임의로 지정)로 붙는다.
+         host가 고정 도메인이 아니라 특정 도메인 화이트리스트가 불가능하므로 평문
+         HTTP를 전역 허용한다. Android 9+(API 28+)는 이 플래그가 없으면 평문 통신을
+         차단해 세션 시작 요청(POST /sessions/start)부터 실패한다. -->
     <application
         android:name=".Mem2LifeApplication"
         android:allowBackup="false"
         android:icon="@drawable/ic_mem2life"
         android:label="@string/app_name"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.Mem2LifeCompanion">
 
         <activity

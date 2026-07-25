@@ -202,7 +202,7 @@ class RecordingSessionController(
         }
     }
 
-    private fun cleanupAfterFailure() {
+    private suspend fun cleanupAfterFailure() {
         cameraController.stopCameraSession()
         videoChunkEncoder?.stop()
         audioSource?.stop()
