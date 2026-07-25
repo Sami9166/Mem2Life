@@ -15,7 +15,6 @@ class PcmResamplerTest {
 
     @Test
     fun `8kHz에서 16kHz로 업샘플링하면 샘플 수가 2배가 된다`() {
-        // HFP 캡처(8kHz) -> 계약이 요구하는 16kHz로 리샘플링하는 실제 사용 시나리오.
         val sampleCount = 160 // 20ms @ 8kHz
         val input = shortsToBytes(ShortArray(sampleCount) { (it * 10).toShort() })
 
@@ -24,6 +23,20 @@ class PcmResamplerTest {
 
         val outputSamples = result.size / 2
         assertEquals(sampleCount * 2, outputSamples)
+    }
+
+    @Test
+    fun `48kHz에서 16kHz로 다운샘플링하면 샘플 수가 3분의 1이 된다`() {
+        // Blade 2에서 16kHz 직접 캡처가 안 될 때 DeviceMicAudioSource가
+        // 48kHz로 폴백 캡처 -> 계약이 요구하는 16kHz로 다운샘플링하는 시나리오.
+        val sampleCount = 960 // 20ms @ 48kHz
+        val input = shortsToBytes(ShortArray(sampleCount) { (it % 100).toShort() })
+
+        val result =
+            PcmResampler.resamplePcm16(input, inputRateHz = 48_000, outputRateHz = 16_000)
+
+        val outputSamples = result.size / 2
+        assertEquals(sampleCount / 3, outputSamples)
     }
 
     @Test

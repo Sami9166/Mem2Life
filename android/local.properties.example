@@ -1,8 +1,7 @@
 # local.properties 예시 — 실제 local.properties는 커밋하지 않는다 (.gitignore 처리됨).
 #
-# 1) GitHub Packages에서 DAT SDK를 내려받기 위한 토큰 (read:packages 스코프).
-#    환경변수 GITHUB_TOKEN으로도 대체 가능하며, 그 경우 이 값은 생략해도 된다.
-github_token=YOUR_GITHUB_PERSONAL_ACCESS_TOKEN
-
-# 2) Android SDK 경로는 보통 Android Studio가 자동으로 채워준다.
+# Vuzix Blade 2 전환 이후 사설 SDK 저장소 토큰은 필요 없다 — 모든 의존성이
+# google()/mavenCentral() 공개 저장소에서 내려받아진다.
+#
+# Android SDK 경로는 보통 Android Studio가 자동으로 채워준다.
 # sdk.dir=/Users/you/Library/Android/sdk
