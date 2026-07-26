@@ -31,9 +31,10 @@ from .answer.factory import get_answer_generator
 from .classify.factory import DEFAULT_PROVIDER as DEFAULT_CLASSIFIER_PROVIDER
 from .classify.factory import get_question_classifier
 from .classify.question_type import QuestionType
+from .fallback.factory import DEFAULT_PROVIDER as DEFAULT_VIDEO_REQUERY_PROVIDER
+from .fallback.factory import get_video_requery_client
 from .fallback.trigger import (
     FallbackDecision,
-    StubVideoRequeryClient,
     VideoRequeryClient,
     decide_fallback,
 )
@@ -113,6 +114,7 @@ class RecallPipeline:
         answer_provider: str = DEFAULT_ANSWER_PROVIDER,
         classifier_provider: str = DEFAULT_CLASSIFIER_PROVIDER,
         video_requery_client: VideoRequeryClient | None = None,
+        video_requery_provider: str = DEFAULT_VIDEO_REQUERY_PROVIDER,
         database_url: str | None = None,
     ) -> None:
         self.index: VaultIndex | PostgresIndex
@@ -146,7 +148,12 @@ class RecallPipeline:
             self.index = build_index(vault_dir, cache_path=cache_path, embedding_provider=embedding_provider)
         self.classifier = get_question_classifier(classifier_provider)
         self.answer_generator = get_answer_generator(answer_provider)
-        self.video_requery_client: VideoRequeryClient = video_requery_client or StubVideoRequeryClient()
+        # 명시적으로 주입하면 그걸 쓰고(테스트/커스텀), 아니면 factory가 provider별
+        # 클라이언트를 만든다. 기본 provider "gemini"는 GEMINI_API_KEY가 없으면
+        # 자동으로 스텁으로 폴백하므로 API 키 없이도 파이프라인이 끝까지 돈다.
+        self.video_requery_client: VideoRequeryClient = video_requery_client or get_video_requery_client(
+            video_requery_provider
+        )
 
     @property
     def index_mode(self) -> str:
@@ -174,8 +181,15 @@ class RecallPipeline:
         fallback_stub_result: str | None = None
         final_text = draft_answer.text
         if fallback.triggered:
-            fallback_stub_result = self.video_requery_client.requery(question, fallback.clip_targets)
-            final_text = f"{_FALLBACK_NOTICE_PREFIX} {fallback.note}"
+            requery = self.video_requery_client.requery(question, fallback.clip_targets)
+            # 재조회 원문(성공/실패 불문)은 화면 표시/디버깅용으로 그대로 보존한다.
+            fallback_stub_result = requery.answer_text
+            if requery.grounded:
+                # 영상에서 실제 근거를 찾았다 → 재답변으로 승격(CLAUDE.md ③단계).
+                final_text = requery.answer_text
+            else:
+                # 텍스트도 영상도 근거가 없다 → 지어내지 않고 정직하게 실패.
+                final_text = f"{_FALLBACK_NOTICE_PREFIX} {fallback.note}"
 
         return RecallAnswer(
             question=question,

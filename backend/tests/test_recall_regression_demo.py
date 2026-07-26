@@ -97,12 +97,13 @@ def test_q3_book_title_triggers_fallback_without_fabricating(pipeline: RecallPip
     # 안 된다(있다면 지어낸 것이다).
     assert "『" not in result.final_text and "」" not in result.final_text
 
-    # fallback 대상 영상 구간은 세션 A(어제) 영상이어야 하고, 재조회는
-    # 아직 스텁이라는 점이 stub 결과 문구에 드러나야 한다.
+    # fallback 대상 영상 구간은 세션 A(어제) 영상이어야 하고, 이 테스트 환경엔
+    # GEMINI_API_KEY가 없으므로(conftest가 비움) 재조회가 스텁으로 폴백돼
+    # "미수행"이 결과 문구에 드러나야 한다(지어낸 답이 아님).
     assert result.fallback.clip_targets
     assert all("test_session_A" in target.video_path for target in result.fallback.clip_targets)
     assert result.fallback_stub_result is not None
-    assert "구현되지 않았습니다" in result.fallback_stub_result
+    assert "미수행" in result.fallback_stub_result
 
 
 def test_q3_evidence_includes_scene_caption_about_the_book(pipeline: RecallPipeline) -> None:
