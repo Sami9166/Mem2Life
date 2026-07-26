@@ -19,7 +19,7 @@
 
     client = genai.Client()  # GEMINI_API_KEY(또는 GOOGLE_API_KEY) 환경변수를 자동으로 읽음
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-flash-latest",
         contents=[
             types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
             "이 장면을 설명해줘",
@@ -77,13 +77,13 @@ from .base import CaptionItem
 _ENV_KEY_API_KEY = "GEMINI_API_KEY"
 
 # 기술조사_의사결정.md 조사4가 인용하는 모델("Gemini 2.5 Flash($0.30/M 입력)")을
-# 기본값으로 쓴다. 설치된 google-genai==2.14.0의 로컬 토크나이저 매핑
-# (`google/genai/_local_tokenizer_loader.py`)에는 "gemini-3.5-flash" 등 더 최신
-# 계열 이름도 보이지만, 실제 Generative Language API에서 그 모델 ID가
-# 프로덕션으로 유효한지는 이 환경(실제 API 키 없음)에서 검증하지 못했다 —
-# 필요하면 이 상수 하나만 바꾸면 되고, `GEMINI_MODEL` 환경변수로도 즉시
-# 교체할 수 있게 열어둔다.
-DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+# [2026-07-26] 실제 API 키로 검증: "gemini-2.5-flash"는 client.models.list()에는
+# 나오지만 신규 사용자에게는 404("no longer available to new users")를 반환한다.
+# "gemini-flash-latest"(항상 현재 권장 flash 모델을 가리키는 별칭)로 실제
+# generate_content 호출까지 확인됨 — 모델 세대가 바뀌어도 이 상수를 계속
+# 갱신할 필요가 없어 이걸 기본값으로 쓴다. `GEMINI_MODEL` 환경변수로 특정
+# 버전에 고정하고 싶으면 언제든 덮어쓸 수 있다.
+DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 
 _TEMPERATURE = 0.3  # 사실 기반 서술이 목적이라 창작적 다양성보다 일관성을 우선한다.
 _MAX_OUTPUT_TOKENS_CAPTION = 300

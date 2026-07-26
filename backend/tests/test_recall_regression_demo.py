@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from recall.classify.question_type import QuestionType
+from recall.fallback.trigger import StubVideoRequeryClient
 from recall.pipeline import RecallPipeline
 from recall.search.coarse_to_fine import coarse_to_fine_search
 
@@ -24,7 +25,15 @@ from recall.search.coarse_to_fine import coarse_to_fine_search
 @pytest.fixture(scope="module")
 def pipeline(mock_vault_dir: Path, tmp_path_factory: pytest.TempPathFactory) -> RecallPipeline:
     cache_path = tmp_path_factory.mktemp("recall_regression_cache") / "cache.json"
-    return RecallPipeline(mock_vault_dir, cache_path=cache_path)
+    # video_requery_client를 스텁으로 명시 주입한다 — 이 fixture가
+    # module-scope라 함수별 autouse 크레덴셜 클리어(conftest.py)보다 먼저
+    # 생성될 수 있고, 그 순간 실제 backend/.env의 GEMINI_API_KEY가 process
+    # 환경에 남아있으면(예: 같은 세션에서 앞서 실행된 CLI e2e 테스트가
+    # load_dotenv()를 호출한 경우) factory가 실제 Gemini 클라이언트를 골라
+    # 이 회귀 테스트가 진짜 네트워크를 타는 사고가 난다 — 실제로 재현됨.
+    return RecallPipeline(
+        mock_vault_dir, cache_path=cache_path, video_requery_client=StubVideoRequeryClient()
+    )
 
 
 def test_highlights_do_not_crowd_out_distinct_sessions(pipeline: RecallPipeline) -> None:

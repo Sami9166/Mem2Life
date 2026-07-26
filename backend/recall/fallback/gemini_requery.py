@@ -24,10 +24,15 @@ Gemini에 영상 입력으로 넣고 다시 물어본다(재답변). 표준 API�
     client = genai.Client(api_key=...)          # GEMINI_API_KEY/GOOGLE_API_KEY
     from google.genai import types
     resp = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-flash-latest",
         contents=[prompt_text, types.Part.from_bytes(data=..., mime_type="video/mp4")],
     )
     resp.text
+
+[2026-07-26] 실제 API 키로 검증: "gemini-2.5-flash"는 신규 사용자에게 404("no
+longer available to new users")를 반환한다. "gemini-flash-latest"(항상 현재
+권장 flash 모델을 가리키는 별칭)로 실제 generate_content 호출까지 확인됨 —
+모델 세대가 바뀌어도 갱신할 필요가 없어 기본값으로 쓴다.
 """
 
 from __future__ import annotations
@@ -42,7 +47,7 @@ from ..answer.base import format_mmss
 from .trigger import VideoClipTarget, VideoRequeryResult
 from .video_clip import ClipExtractionError, FFmpegNotFoundError, extract_clip
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 
 # 인라인 영상 요청은 총 요청 크기 ~20MB 제한이 있다(그 이상은 File API 업로드
 # 필요). 30초 안팎 클립은 보통 이 아래지만, 안전 여유를 두고 이 값을 넘는
