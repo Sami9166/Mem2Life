@@ -1,7 +1,7 @@
 {
   "_comment": "백엔드 기본 설정값 — 하드코딩 금지 원칙에 따라 앱은 이 값을 '초기값'으로만 쓰고, 실제 접속 주소는 설정 화면에서 SharedPreferences로 덮어쓸 수 있다 (BackendConfigStore 참고). 데모 환경(노트북 로컬 FastAPI 서버)에 맞춰 조정할 것.",
   "scheme": "http",
-  "host": "10.0.2.2",
+  "host": "192.168.0.5",
   "port": 8000,
   "wsScheme": "ws"
 }

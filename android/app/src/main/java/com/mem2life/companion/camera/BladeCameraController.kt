@@ -236,6 +236,29 @@ class BladeCameraController(private val context: Context) {
         cameraHandler = null
     }
 
+    /**
+     * 온보드 카메라의 SENSOR_ORIENTATION(도) — 캡처된 원본 프레임을 똑바로 세우려면
+     * 시계방향으로 돌려야 하는 각도다.
+     *
+     * **Blade 2는 이 값이 180이다.** 즉 [startCameraSession]이 넘기는 I420 버퍼는
+     * 상하좌우가 뒤집힌 상태다(실기기 A/B 검증: 순정 Vuzix 카메라 앱과 같은 장면을
+     * 찍으면 정확히 180° 차이가 난다). 프레임을 직접 회전시키지 않고 이 값을
+     * VideoChunkEncoder의 mp4 회전 힌트로 넘겨 인코딩 비용 없이 보정한다.
+     *
+     * 인코더가 카메라보다 먼저 준비되므로 **카메라를 열기 전에도** 호출 가능해야 한다.
+     * 조회에 실패하면 0을 돌려 회전 보정 없이 진행한다(녹화 자체를 막지 않는다).
+     */
+    fun sensorOrientationDegrees(): Int {
+        return try {
+            val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val cameraId = pickCameraId(manager) ?: return 0
+            manager.getCameraCharacteristics(cameraId).get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        } catch (e: Exception) {
+            Log.w(TAG, "SENSOR_ORIENTATION 조회 실패 — 회전 보정 없이 진행", e)
+            0
+        }
+    }
+
     /** 후면(월드뷰) 카메라 우선 — Blade 2 온보드 카메라는 LENS_FACING_BACK으로 보고된다. */
     private fun pickCameraId(manager: CameraManager): String? {
         val ids = manager.cameraIdList
