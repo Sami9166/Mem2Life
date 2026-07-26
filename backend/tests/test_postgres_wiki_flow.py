@@ -152,6 +152,10 @@ def test_run_ingest_pipeline_falls_back_to_file_mode_when_postgres_unreachable(
         session_start=datetime(2026, 7, 22, 14, 0),
         database_url=_UNREACHABLE_DATABASE_URL,
         summary="민수와 제주도 여행 계획을 논의했다.",
+        # 이 테스트는 DB 폴백만 검증한다. video.mp4가 실제 디코딩 가능한
+        # 파일이 아니라서(가짜 바이트) 키프레임 추출(ffprobe 실호출)까지
+        # 켜두면 무관한 이유로 실패한다.
+        extract_keyframes=False,
     )
 
     assert result.session_md_path.exists()
