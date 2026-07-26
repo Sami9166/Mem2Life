@@ -47,8 +47,24 @@ class VideoChunkEncoder(
     private val height: Int,
     private val frameRateFps: Int,
     private val chunkDurationSec: Double,
+    /**
+     * 카메라 SENSOR_ORIENTATION(도). 각 mp4 청크에 회전 힌트로 기록해 재생/분석
+     * 단계에서 보정되게 한다 — Blade 2는 180이라 이 값이 없으면 모든 청크가
+     * 뒤집힌 채 업로드된다. 픽셀을 직접 돌리지 않으므로 인코딩 비용은 0이다.
+     */
+    private val orientationHintDegrees: Int = 0,
     private val onChunkReady: (ChunkFile) -> Unit,
 ) {
+    /** MediaMuxer가 받는 값은 0/90/180/270뿐이라 그 외에는 보정을 포기한다(녹화는 계속). */
+    private val orientationHint: Int =
+        when (val normalized = orientationHintDegrees.mod(360)) {
+            0, 90, 180, 270 -> normalized
+            else -> {
+                Log.w(TAG, "지원하지 않는 회전각(${orientationHintDegrees}도) — 회전 힌트 없이 진행")
+                0
+            }
+        }
+
     private var codec: MediaCodec? = null
     private var colorFormat: Int = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
     private var muxer: MediaMuxer? = null
@@ -86,6 +102,7 @@ class VideoChunkEncoder(
 
     fun start(scope: CoroutineScope) {
         outputDir.mkdirs()
+        Log.i(TAG, "인코더 시작: ${width}x${height} @${frameRateFps}fps, 회전 힌트=${orientationHint}도")
         val format =
             MediaFormat.createVideoFormat(MIME_TYPE, width, height).apply {
                 setInteger(MediaFormat.KEY_BIT_RATE, BITRATE_BPS)
@@ -286,6 +303,11 @@ class VideoChunkEncoder(
         val file = File(outputDir, fileName)
         currentChunkFile = file
         val newMuxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        // 회전 힌트는 반드시 start() 전에 설정해야 한다(이후 호출은 IllegalStateException).
+        // 청크마다 새 muxer를 열므로 매 청크에 동일하게 넣어야 seq>=1도 보정된다.
+        if (orientationHint != 0) {
+            newMuxer.setOrientationHint(orientationHint)
+        }
         muxer = newMuxer
         muxerStarted = false
         // 2번째 이후 청크: 출력 포맷은 이미 알고 있으므로(캐시) 즉시 트랙 추가/시작.

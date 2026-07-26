@@ -121,6 +121,9 @@ class RecordingSessionController(
                     height = VIDEO_HEIGHT_PX,
                     frameRateFps = VIDEO_FRAME_RATE_FPS,
                     chunkDurationSec = CHUNK_DURATION_SEC,
+                    // Blade 2 카메라는 SENSOR_ORIENTATION=180이라 보정 없이는 전 청크가
+                    // 뒤집힌다. 카메라를 열기 전에 조회하므로 이 시점에 호출해도 안전하다.
+                    orientationHintDegrees = cameraController.sensorOrientationDegrees(),
                     onChunkReady = { chunk ->
                         queue.enqueue(chunk.file, chunk.seq, chunk.startTsSec, chunk.durationSec)
                     },
