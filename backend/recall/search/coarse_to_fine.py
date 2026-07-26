@@ -98,9 +98,7 @@ def coarse_to_fine_search(
     )
     entity_idx = index.indices_for(levels={ChunkLevel.ENTITY})
 
-    session_candidates = index.search(
-        question, indices=session_level_idx, top_k=len(session_level_idx)
-    )
+    session_candidates = index.search(question, indices=session_level_idx, top_k=len(session_level_idx))
     session_evidence = session_candidates[:top_k_session]
     entity_evidence = index.search(question, indices=entity_idx, top_k=top_k_session)
 
