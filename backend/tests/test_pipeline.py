@@ -11,6 +11,8 @@ import ingest.pipeline as pipeline_module
 from ingest.pipeline import IngestResult, run_ingest_pipeline
 from ingest.stt.base import Transcript
 from ingest.stt.rtzr_client import RTZRAPIError
+from ingest.vlm.base import CaptionItem
+from ingest.vlm.gemini_client import GeminiAPIError
 
 
 def _parse_frontmatter(md_path: Path) -> dict:
@@ -72,6 +74,13 @@ def test_run_ingest_pipeline_requires_no_api_key_env(
     result = run_ingest_pipeline(dummy_video, tmp_path / "vault")
     assert result.session_md_path.exists()
 
+    # captions/summary를 명시적으로 안 넘겼고 GEMINI_API_KEY도 없으므로
+    # 플레이스홀더(키프레임 이미지 링크 + TODO)로 채워져야 한다 — VLM/LLM 없이도
+    # 세션 md가 끝까지 만들어진다는 CLAUDE.md 원칙의 회귀 테스트.
+    content = result.session_md_path.read_text(encoding="utf-8")
+    assert "TODO: LLM 요약" in content
+    assert "TODO: VLM 캡션" in content
+
 
 def test_run_ingest_pipeline_missing_video_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
@@ -126,6 +135,107 @@ def test_run_ingest_pipeline_does_not_fall_back_on_credential_error(
 
     with pytest.raises(RTZRCredentialError):
         run_ingest_pipeline(dummy_video, tmp_path / "vault", stt_provider="rtzr")
+
+
+class _FailingCaptioner:
+    provider_name = "gemini"
+
+    def caption_keyframes(self, keyframes, transcript, *, media_slug: str) -> list[CaptionItem]:
+        raise GeminiAPIError("Gemini API 호출이 실패했습니다 (HTTP 503): 서버 과부하 (재시도 소진)")
+
+
+class _FailingSummarizer:
+    provider_name = "gemini"
+
+    def summarize_session(self, transcript, captions, participants) -> str | None:
+        raise GeminiAPIError("Gemini API 호출이 실패했습니다 (HTTP 503): 서버 과부하 (재시도 소진)")
+
+
+def test_run_ingest_pipeline_falls_back_to_placeholder_when_vlm_caption_api_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    dummy_video: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """GEMINI_API_KEY는 있지만(실제 클라이언트가 만들어졌지만) VLM 캡션 호출
+    자체가 실패(GeminiAPIError)해도, RTZR API 실패와 동일한 원칙으로 세션 md
+    생성까지는 끝까지 진행해야 한다 (회귀 테스트)."""
+    monkeypatch.setattr(pipeline_module, "get_vlm_captioner", lambda provider: _FailingCaptioner())
+
+    result = run_ingest_pipeline(dummy_video, tmp_path / "vault")
+
+    assert result.session_md_path.exists()
+    content = result.session_md_path.read_text(encoding="utf-8")
+    assert "TODO: VLM 캡션" in content  # 실패 시 대체된 플레이스홀더 캡션
+
+    warning = capsys.readouterr().err
+    assert "[경고]" in warning
+    assert "VLM 캡션 생성이 실패" in warning
+
+
+def test_run_ingest_pipeline_falls_back_to_placeholder_when_llm_summary_api_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    dummy_video: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """LLM 요약 호출 자체가 실패(GeminiAPIError)해도 세션 md는 TODO 요약으로
+    끝까지 생성돼야 한다 (회귀 테스트)."""
+    monkeypatch.setattr(pipeline_module, "get_llm_summarizer", lambda provider: _FailingSummarizer())
+
+    result = run_ingest_pipeline(dummy_video, tmp_path / "vault")
+
+    assert result.session_md_path.exists()
+    content = result.session_md_path.read_text(encoding="utf-8")
+    assert "TODO: LLM 요약" in content
+
+    warning = capsys.readouterr().err
+    assert "[경고]" in warning
+    assert "LLM 요약 생성이 실패" in warning
+
+
+def test_run_ingest_pipeline_does_not_fall_back_on_gemini_credential_error(
+    monkeypatch: pytest.MonkeyPatch, dummy_video: Path, tmp_path: Path
+) -> None:
+    """`GeminiCredentialError`는 RTZRCredentialError와 동일한 원칙으로 설정
+    문제이지 일시적 장애가 아니므로 조용히 플레이스홀더로 대체하지 않고 그대로
+    전파해야 한다."""
+    from ingest.vlm.gemini_client import GeminiCredentialError
+
+    class _CredentialFailingCaptioner:
+        provider_name = "gemini"
+
+        def caption_keyframes(self, keyframes, transcript, *, media_slug: str) -> list[CaptionItem]:
+            raise GeminiCredentialError("Gemini API 인증/요청 오류입니다 (HTTP 401): API key not valid")
+
+    monkeypatch.setattr(pipeline_module, "get_vlm_captioner", lambda provider: _CredentialFailingCaptioner())
+
+    with pytest.raises(GeminiCredentialError):
+        run_ingest_pipeline(dummy_video, tmp_path / "vault")
+
+
+def test_run_ingest_pipeline_explicit_captions_and_summary_skip_vlm_llm_calls(
+    monkeypatch: pytest.MonkeyPatch, dummy_video: Path, tmp_path: Path
+) -> None:
+    """호출자가 captions/summary를 명시적으로 넘기면 그대로 써야 하고, VLM/LLM
+    provider를 아예 호출하면 안 된다 (기존 인터페이스 하위호환 요구사항)."""
+
+    def _fail_if_called(provider: str) -> None:  # pragma: no cover
+        raise AssertionError(f"명시적으로 넘긴 값이 있으면 {provider} provider를 호출하면 안 됨")
+
+    monkeypatch.setattr(pipeline_module, "get_vlm_captioner", _fail_if_called)
+    monkeypatch.setattr(pipeline_module, "get_llm_summarizer", _fail_if_called)
+
+    result = run_ingest_pipeline(
+        dummy_video,
+        tmp_path / "vault",
+        summary="명시적으로 넘긴 요약문.",
+        captions=[(1.0, 2.0, "명시적으로 넘긴 캡션.")],
+    )
+
+    content = result.session_md_path.read_text(encoding="utf-8")
+    assert "명시적으로 넘긴 요약문." in content
+    assert "명시적으로 넘긴 캡션." in content
 
 
 def test_run_ingest_pipeline_participants_override(dummy_video: Path, tmp_path: Path) -> None:

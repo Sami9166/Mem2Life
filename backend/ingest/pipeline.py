@@ -1,25 +1,35 @@
 """영상 파일 하나로 기록 파이프라인 전체(오디오 추출 → STT, 키프레임 추출 →
-세션 md 생성)를 처음부터 끝까지 실행하는 오케스트레이션 모듈.
+VLM 캡션 → LLM 요약 → 세션 md 생성)를 처음부터 끝까지 실행하는 오케스트레이션
+모듈.
 
-이번 단계 범위: 오디오 추출 → STT(화자분리, 스텁) → 영상 사건 경계 탐지·
-대표 키프레임 저장(`ingest/visual.py`) → Obsidian 세션 md 생성까지.
-키프레임에 실제 서술을 붙이는 VLM 캡셔닝·LLM 요약·엔티티 페이지 갱신은 다음
-단계 — 그때까지는 저장된 키프레임 이미지를 참조하는 placeholder 캡션으로
-채운다(`_placeholder_captions_from_keyframes`).
+이번 단계 범위: 오디오 추출 → STT(화자분리) → 영상 사건 경계 탐지·대표
+키프레임 저장(`ingest/visual.py`) → VLM 캡션(`ingest/vlm/`) → LLM 요약
+(`ingest/vlm/`) → Obsidian 세션 md 생성까지. 엔티티(인물/주제) 페이지 갱신은
+아직 다음 단계다.
 
-API 키 없이 끝까지 성공하는 것이 이번 단계의 핵심 목표이므로, STT는 항상
-스텁(RTZR/Clova 중 선택)을 사용한다.
+API 키 없이 끝까지 성공하는 것이 이번 단계의 핵심 목표다. STT(RTZR/Clova)와
+VLM 캡션·LLM 요약(Gemini, 기술조사_의사결정.md 조사4) 모두 같은 두 단계 폴백
+원칙을 따른다:
 
-실제 RTZR API 연동 이후에도 이 원칙은 유지된다 — `stt_client.transcribe()`가
-`RTZRAPIError`(네트워크 429/5xx 소진, RTZR 서버가 status="failed"를 반환,
-폴링 타임아웃 등 인증 이후 단계에서 발생하는 실패)를 던지면, 데모 도중
-전체 실행이 중단돼 세션 md가 아예 생성되지 않는 최악의 상황을 피하기 위해
-이 함수가 화자1/화자2 더미 스텁 전사록으로 대체해 파이프라인을 끝까지
-진행시킨다(경고 메시지 출력, 나중에 재처리 권장). `RTZRCredentialError`
+    1. 생성 시점 폴백(각 `factory.py`의 책임): 인증 정보가 아예 없으면 실제
+       클라이언트를 만들지 않고 곧바로 스텁/플레이스홀더를 쓴다.
+    2. 실행 시점 폴백(이 모듈의 책임, 아래): 인증 정보는 있어서 실제
+       클라이언트가 만들어졌지만 호출 자체가 실패하면, 데모 도중 전체 실행이
+       중단돼 세션 md가 아예 생성되지 않는 최악의 상황을 피하기 위해 그
+       세션만 스텁/플레이스홀더로 대체해 파이프라인을 끝까지 진행시킨다
+       (경고 메시지 출력, 나중에 재처리 권장).
+
+`stt_client.transcribe()`가 `RTZRAPIError`(네트워크 429/5xx 소진, RTZR
+서버가 status="failed"를 반환, 폴링 타임아웃 등 인증 이후 단계에서 발생하는
+실패)를 던지면 화자1/화자2 더미 스텁 전사록으로 대체한다. `RTZRCredentialError`
 (인증 정보 누락/오류)는 여기서 잡지 않는다 — 그 경로는 이미
 `stt.factory._build_rtzr_client()`가 생성 시점에 스텁으로 대체하므로 이
 지점까지 올라오지 않아야 하고, 만약 올라온다면 설정 문제이지 일시적
 장애가 아니므로 그대로 실패시켜 사용자가 인지하게 한다.
+
+VLM 캡션/LLM 요약도 동일하다 — `GeminiAPIError`(네트워크 오류, 429/5xx, 빈
+응답 등)는 플레이스홀더로 대체하고, `GeminiCredentialError`는 잡지 않고
+그대로 전파한다(설정 문제이지 일시적 장애가 아니므로).
 
 `database_url`을 지정했는데 PostgreSQL 연결 자체가 실패하는 경우
 (`psycopg.OperationalError` — 서버 미기동, 네트워크 문제 등)도 같은
@@ -47,6 +57,15 @@ from .stt.factory import DEFAULT_PROVIDER, get_stt_client
 from .stt.rtzr_client import RTZRAPIError
 from .stt.rtzr_stub import RTZRStubClient
 from .visual import ProcessedKeyframe, VideoOpenError, VisualProcessingResult, process_video
+from .vlm.base import CaptionItem
+from .vlm.factory import (
+    DEFAULT_CAPTION_PROVIDER,
+    DEFAULT_SUMMARY_PROVIDER,
+    get_llm_summarizer,
+    get_vlm_captioner,
+)
+from .vlm.gemini_client import GeminiAPIError
+from .vlm.stub import PlaceholderLLMSummarizer, PlaceholderVLMCaptioner
 from .wiki.session_md import session_filename, write_session_md
 
 
@@ -139,23 +158,67 @@ def _memory_items(
     return tuple(items)
 
 
-def _placeholder_captions_from_keyframes(
-    keyframes: Sequence[ProcessedKeyframe], media_slug: str
-) -> list[tuple[float, float, str]]:
-    """VLM 캡션이 아직 없을 때, 저장된 키프레임 이미지만이라도 볼트에서 바로 보이게 하는 임시 캡션.
+def _resolve_captions(
+    captions: Sequence[CaptionItem],
+    keyframes: Sequence[ProcessedKeyframe],
+    transcript: Transcript,
+    *,
+    media_slug: str,
+    caption_provider: str,
+) -> list[CaptionItem]:
+    """호출자가 `captions`를 명시적으로 넘기면 그대로 쓰고, 아니면 VLM으로 만든다.
 
-    실제 장면 서술(무엇이 찍혔는지)이 아니라 "이 시점에 대표 이미지가 준비돼
-    있다"는 것만 알려주는 placeholder다 — `run_ingest_pipeline`이 호출자로부터
-    실제 `captions`(VLM이 만든 서술문)를 받으면 이 함수는 쓰이지 않는다.
+    VLM 캡션 생성 자체가 실패하면(`GeminiAPIError`) RTZR과 동일한 원칙으로
+    플레이스홀더로 대체해 세션 md 생성까지는 끝까지 진행한다.
     """
-    return [
-        (
-            keyframe.timestamp_sec,
-            keyframe.timestamp_sec,
-            f"![[media/{media_slug}/{keyframe.image_path.name}]] — TODO: VLM 캡션 (키프레임 이미지만 준비됨)",
+    if captions:
+        return list(captions)
+    if not keyframes:
+        return []
+
+    captioner = get_vlm_captioner(caption_provider)
+    try:
+        return captioner.caption_keyframes(keyframes, transcript, media_slug=media_slug)
+    except GeminiAPIError as exc:
+        print(
+            "[경고] VLM 캡션 생성이 실패해 이번 세션은 실제 장면 캡션 대신 "
+            f"키프레임 이미지 플레이스홀더로 대체합니다: {exc}\n"
+            "        Gemini API가 정상화되면 이 영상으로 다시 실행해 재처리하는 "
+            "것을 권장합니다.",
+            file=sys.stderr,
         )
-        for keyframe in keyframes
-    ]
+        return PlaceholderVLMCaptioner().caption_keyframes(keyframes, transcript, media_slug=media_slug)
+
+
+def _resolve_summary(
+    summary: str | None,
+    transcript: Transcript,
+    captions: Sequence[CaptionItem],
+    participants: Sequence[str],
+    *,
+    summary_provider: str,
+) -> str | None:
+    """호출자가 `summary`를 명시적으로 넘기면 그대로 쓰고, 아니면 LLM으로 만든다.
+
+    LLM 요약 생성 자체가 실패하면(`GeminiAPIError`) `None`으로 대체해
+    `ingest/wiki/session_md.py`의 기존 TODO 플레이스홀더에 위임한다(세션 md
+    생성 자체는 끝까지 진행).
+    """
+    if summary and summary.strip():
+        return summary
+
+    summarizer = get_llm_summarizer(summary_provider)
+    try:
+        return summarizer.summarize_session(transcript, captions, participants)
+    except GeminiAPIError as exc:
+        print(
+            "[경고] LLM 요약 생성이 실패해 이번 세션은 요약 없이(TODO 플레이스홀더) "
+            f"진행합니다: {exc}\n"
+            "        Gemini API가 정상화되면 이 영상으로 다시 실행해 재처리하는 "
+            "것을 권장합니다.",
+            file=sys.stderr,
+        )
+        return PlaceholderLLMSummarizer().summarize_session(transcript, captions, participants)
 
 
 def _transcript_from_session(session: StoredSession) -> Transcript:
@@ -194,6 +257,8 @@ def run_ingest_pipeline(
     captions: Sequence[tuple[float, float, str]] = (),
     media_dir: Path | str | None = None,
     extract_keyframes: bool = True,
+    caption_provider: str = DEFAULT_CAPTION_PROVIDER,
+    summary_provider: str = DEFAULT_SUMMARY_PROVIDER,
 ) -> IngestResult:
     """영상 파일 → 오디오 추출 → STT 스텁 → 세션 md 생성을 순서대로 실행한다.
 
@@ -213,15 +278,21 @@ def run_ingest_pipeline(
         keep_audio: False면 세션 md 생성 후 추출된 오디오 파일을 삭제한다.
         database_url: PostgreSQL DSN. 지정하면 DB에 원본을 저장하고 다시 읽어
             Markdown과 pgvector 검색 색인을 만든다. 생략하면 기존 파일 모드.
-        summary: 세션 전체 LLM 요약. 아직 생성되지 않았으면 생략한다.
+        summary: 세션 전체 LLM 요약. 생략하면(또는 빈 문자열이면) 전사록+캡션을
+            바탕으로 `summary_provider`(기본 Gemini)가 자동으로 만든다.
+            GEMINI_API_KEY가 없거나 호출이 실패하면 `ingest/wiki/session_md.py`의
+            기존 TODO 플레이스홀더로 대체된다.
         highlights: ``(시작 초, 종료 초, 설명)`` 주요 순간 목록.
         captions: ``(시작 초, 종료 초, 설명)`` VLM 장면 캡션 목록. 생략하면(빈
-            시퀀스) `extract_keyframes`로 뽑은 키프레임 이미지를 참조하는
-            placeholder 캡션으로 자동 채운다(실제 VLM 서술은 아직 없음을
-            명시하는 TODO 문구 포함).
+            시퀀스) `extract_keyframes`로 뽑은 키프레임마다 `caption_provider`
+            (기본 Gemini)가 직전 전사록을 컨텍스트로 넣어 한국어 장면 캡션을
+            자동으로 만든다. GEMINI_API_KEY가 없거나 호출이 실패하면 키프레임
+            이미지를 참조하는 placeholder 캡션(TODO 문구 포함)으로 대체된다.
         media_dir: 키프레임 이미지를 저장할 디렉토리. 생략 시 `vault_dir/media`.
         extract_keyframes: False면 `ingest/visual.py`의 사건 경계 탐지·키프레임
-            저장을 건너뛴다(오디오/STT만 실행).
+            저장을 건너뛴다(오디오/STT만 실행 — 이 경우 캡션도 자동으로 비게 된다).
+        caption_provider: VLM 캡션 provider 이름(기본 "gemini").
+        summary_provider: LLM 요약 provider 이름(기본 "gemini").
 
     Returns:
         IngestResult: 생성된 세션 md 경로 등 실행 결과.
@@ -286,10 +357,19 @@ def run_ingest_pipeline(
     else:
         visual_result = VisualProcessingResult(session_duration_sec=extracted.duration_sec)
 
-    resolved_captions = (
-        list(captions)
-        if captions
-        else _placeholder_captions_from_keyframes(visual_result.processed_keyframes, media_slug)
+    resolved_captions = _resolve_captions(
+        captions,
+        visual_result.processed_keyframes,
+        transcript,
+        media_slug=media_slug,
+        caption_provider=caption_provider,
+    )
+    resolved_summary = _resolve_summary(
+        summary,
+        transcript,
+        resolved_captions,
+        resolved_participants,
+        summary_provider=summary_provider,
     )
 
     session_id: str | None = None
@@ -318,7 +398,7 @@ def run_ingest_pipeline(
                 markdown_path=None,
                 stt_provider=transcript.provider,
                 status="processing",
-                items=_memory_items(transcript, summary, highlights, captions),
+                items=_memory_items(transcript, resolved_summary, highlights, resolved_captions),
             )
             database.save_session(stored_session)
 
@@ -326,7 +406,7 @@ def run_ingest_pipeline(
             # 읽은 값으로 Markdown을 만들어 저장 방향(DB -> md)을 고정한다.
             stored_session = database.load_session(session_id)
             stored_transcript = _transcript_from_session(stored_session)
-            summary = next(
+            db_summary = next(
                 (item.content for item in stored_session.items if item.kind == "summary"),
                 None,
             )
@@ -340,7 +420,7 @@ def run_ingest_pipeline(
                 transcript=stored_transcript,
                 session_id=stored_session.session_id,
                 transcript_path=stored_session.transcript_path,
-                summary=summary,
+                summary=db_summary,
                 highlights=_timed_items(stored_session, "highlight"),
                 captions=_timed_items(stored_session, "caption"),
             )
@@ -371,7 +451,7 @@ def run_ingest_pipeline(
             participants=resolved_participants,
             video_path=video_path,
             transcript=transcript,
-            summary=summary,
+            summary=resolved_summary,
             highlights=[(start_sec, text) for start_sec, _end_sec, text in highlights],
             captions=[(start_sec, text) for start_sec, _end_sec, text in resolved_captions],
         )
