@@ -86,8 +86,17 @@ _ENV_KEY_API_KEY = "GEMINI_API_KEY"
 DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 
 _TEMPERATURE = 0.3  # 사실 기반 서술이 목적이라 창작적 다양성보다 일관성을 우선한다.
-_MAX_OUTPUT_TOKENS_CAPTION = 300
-_MAX_OUTPUT_TOKENS_SUMMARY = 800
+
+# [2026-07-26] 실키로 검증하다가 발견: "gemini-flash-latest"는 기본적으로 내부
+# "thinking" 토큰을 먼저 소비하고(관찰치 300~740 토큰), 그게 max_output_tokens
+# 예산을 다 써버리면 실제로 보여줄 텍스트가 몇 글자만 남고 잘린다
+# (finish_reason=MAX_TOKENS인데도 아무 경고 없이 조용히 짧은 문자열이 반환돼서
+# 알아채기 어렵다). thinking_config로 끄려 했으나 이 모델은 400 오류로 거부함
+# (모델마다 thinking 비활성화 지원 여부가 다른 듯) — 대신 여유 있게 상한을
+# 올려서 우회했다. 2048/4096으로 실제 이미지·긴 전사록 입력까지 정상 종료
+# (finish_reason=STOP) 확인됨.
+_MAX_OUTPUT_TOKENS_CAPTION = 2048
+_MAX_OUTPUT_TOKENS_SUMMARY = 4096
 
 
 class GeminiCredentialError(RuntimeError):
@@ -138,8 +147,15 @@ def _generate_text(
             ),
         )
     except genai_errors.ClientError as exc:
-        # 4xx: 잘못되거나 만료된 API 키(401/403), 잘못된 요청(400) 등 — 재시도해도
-        # 결과가 바뀌지 않는 설정 문제이므로 credential 에러로 승격한다.
+        if exc.code == 429:
+            # [2026-07-26] 실키로 검증 중 무료 티어 일일 한도(20req/day)에 실제로
+            # 걸려서 발견 — 429는 401/403/400과 달리 "재시도하면 바뀌는" 일시적
+            # 과금/쿼터 문제다. credential 에러로 잘못 분류돼 있으면 호출부의
+            # 스텁 폴백을 건너뛰고 파이프라인 전체가 죽는다(데모 중 API 한도
+            # 소진 시나리오를 정확히 못 막는 셈이라 치명적).
+            raise GeminiAPIError(f"Gemini API 요청 한도를 초과했습니다 (HTTP 429): {exc.message}") from exc
+        # 나머지 4xx: 잘못되거나 만료된 API 키(401/403), 잘못된 요청(400) 등 —
+        # 재시도해도 결과가 바뀌지 않는 설정 문제이므로 credential 에러로 승격한다.
         raise GeminiCredentialError(
             f"Gemini API 인증/요청 오류입니다 (HTTP {exc.code}): {exc.message}"
         ) from exc
@@ -148,6 +164,16 @@ def _generate_text(
         raise GeminiAPIError(f"Gemini API 호출이 실패했습니다 (HTTP {exc.code}): {exc.message}") from exc
     except httpx.RequestError as exc:
         raise GeminiAPIError(f"Gemini API 호출 중 네트워크 오류가 발생했습니다: {exc}") from exc
+
+    finish_reason = response.candidates[0].finish_reason if response.candidates else None
+    if finish_reason is not None and finish_reason.name == "MAX_TOKENS":
+        # thinking 토큰이 max_output_tokens 예산을 먼저 소비하면(2026-07-26 실키
+        # 검증 중 발견) 응답이 비어있진 않지만 문장 중간에서 잘린다 — 빈 텍스트
+        # 체크만으로는 못 잡으므로 여기서 별도로 걸러 stub 폴백을 트리거한다.
+        raise GeminiAPIError(
+            "Gemini 응답이 max_output_tokens 한도에서 잘렸습니다(thinking 토큰 소비 포함). "
+            "설정을 늘리거나 입력을 줄여야 합니다."
+        )
 
     text = response.text
     if not text or not text.strip():

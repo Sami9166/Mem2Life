@@ -159,6 +159,57 @@ class TestGeminiVLMCaptioner:
         with pytest.raises(GeminiAPIError, match="네트워크"):
             captioner.caption_keyframes([keyframe_image], sample_transcript, media_slug="slug")
 
+    def test_rate_limit_raises_api_error_not_credential_error(
+        self, keyframe_image: ProcessedKeyframe, sample_transcript: Transcript
+    ) -> None:
+        """429(쿼터 초과)는 401/403과 달리 재시도하면 바뀌는 일시적 문제라
+        GeminiAPIError로 분류돼야 한다 — pipeline.py가 이걸 잡아 스텁으로
+        폴백한다. 실제로 무료 티어 일일 한도(20req/day)에 걸려서 발견된
+        회귀 테스트다(잘못 분류돼 있으면 크레덴셜 에러로 승격돼 파이프라인
+        전체가 죽는다)."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                429,
+                json={
+                    "error": {
+                        "code": 429,
+                        "message": "You exceeded your current quota",
+                        "status": "RESOURCE_EXHAUSTED",
+                    }
+                },
+            )
+
+        captioner = GeminiVLMCaptioner(client=_fake_client(handler))
+        with pytest.raises(GeminiAPIError, match="429"):
+            captioner.caption_keyframes([keyframe_image], sample_transcript, media_slug="slug")
+
+    def test_max_tokens_truncation_raises_api_error(
+        self, keyframe_image: ProcessedKeyframe, sample_transcript: Transcript
+    ) -> None:
+        """finishReason=MAX_TOKENS면 응답이 비어있지 않아도(문장 중간에 잘림)
+        GeminiAPIError로 잡아 스텁 폴백을 트리거해야 한다. 실키로 검증 중
+        발견된 사고를 고정한 회귀 테스트 — 최신 Gemini 모델이 내부 "thinking"
+        토큰을 먼저 소비해 max_output_tokens 예산을 다 써버리면 눈에 보이는
+        텍스트가 몇 글자만 남고 잘리는데, 빈 텍스트 체크만으로는 못 잡는다."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {
+                            "content": {"parts": [{"text": "이미지는"}], "role": "model"},
+                            "finishReason": "MAX_TOKENS",
+                        }
+                    ]
+                },
+            )
+
+        captioner = GeminiVLMCaptioner(client=_fake_client(handler))
+        with pytest.raises(GeminiAPIError, match="max_output_tokens"):
+            captioner.caption_keyframes([keyframe_image], sample_transcript, media_slug="slug")
+
     def test_empty_response_raises_api_error(
         self, keyframe_image: ProcessedKeyframe, sample_transcript: Transcript
     ) -> None:
