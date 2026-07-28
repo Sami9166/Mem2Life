@@ -36,6 +36,11 @@ htmlcov/
 venv/
 env/
 
+# --- Project-local PostgreSQL runtime/data ---
+.postgres-runtime/
+.postgres-data/
+.postgres.log
+
 # --- OS / 에디터 ---
 .DS_Store
 .idea/
