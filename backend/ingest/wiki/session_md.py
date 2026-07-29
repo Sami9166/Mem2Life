@@ -26,7 +26,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..stt.base import Transcript
+from ..stt.base import Transcript, format_timestamp
 
 _TODO_SUMMARY = "TODO: LLM 요약 — 다음 단계(요약·엔티티 갱신)에서 채워진다."
 _TODO_HIGHLIGHTS = "TODO: VLM 캡션 기반 주요 순간 추출 — 다음 단계에서 채워진다."
@@ -66,6 +66,8 @@ def _format_frontmatter(
     session_end: datetime,
     participants: Sequence[str],
     video_path: str | Path,
+    session_id: str | None = None,
+    transcript_path: str | Path | None = None,
 ) -> str:
     date_str = session_start.strftime("%Y-%m-%d")
     time_str = f"{session_start.strftime('%H:%M')}-{session_end.strftime('%H:%M')}"
@@ -73,10 +75,16 @@ def _format_frontmatter(
     video_str = _yaml_double_quoted(str(video_path))
     lines = [
         "---",
+        *([f"session_id: {_yaml_double_quoted(session_id)}"] if session_id else []),
         f"date: {date_str}",
         f"time: {time_str}",
         f"participants: [{participants_str}]",
         f"video: {video_str}",
+        *(
+            [f"transcript: {_yaml_double_quoted(str(transcript_path))}"]
+            if transcript_path is not None
+            else []
+        ),
         "---",
     ]
     return "\n".join(lines)
@@ -91,6 +99,14 @@ def _format_transcript_section(transcript: Transcript) -> str:
     return "\n".join(lines)
 
 
+def _format_timed_items(items: Sequence[tuple[float, str]]) -> str:
+    lines = []
+    for start_sec, text in items:
+        timestamp = format_timestamp(start_sec)
+        lines.append(f"- [{timestamp}] {text}")
+    return "\n".join(lines)
+
+
 def build_session_markdown(
     *,
     session_start: datetime,
@@ -98,6 +114,11 @@ def build_session_markdown(
     participants: Sequence[str],
     video_path: str | Path,
     transcript: Transcript,
+    session_id: str | None = None,
+    transcript_path: str | Path | None = None,
+    summary: str | None = None,
+    highlights: Sequence[tuple[float, str]] = (),
+    captions: Sequence[tuple[float, str]] = (),
 ) -> str:
     """세션 md 본문 문자열을 만든다 (파일 쓰기는 하지 않음 — 테스트하기 쉽게 분리).
 
@@ -108,6 +129,11 @@ def build_session_markdown(
             `[[위키링크]]`는 이 함수가 자동으로 감싸주므로 대괄호 없이 넘긴다.
         video_path: 원본 영상 경로 (fallback 재조회용, frontmatter에 그대로 기록).
         transcript: STT 전문 결과 (요약본 아님).
+        session_id: DB 세션 ID. DB를 사용하지 않는 기존 파일 모드에서는 생략한다.
+        transcript_path: STT 원본 JSON 경로. DB 세션을 재처리할 때 사용한다.
+        summary: LLM 세션 요약. 아직 생성되지 않았으면 TODO를 기록한다.
+        highlights: ``(영상 기준 시작 초, 설명)`` 주요 순간 목록.
+        captions: ``(영상 기준 시작 초, 설명)`` VLM 장면 캡션 목록.
     """
     if session_end is None:
         session_end = session_start + timedelta(seconds=transcript.duration_sec)
@@ -117,17 +143,22 @@ def build_session_markdown(
         session_end=session_end,
         participants=participants,
         video_path=video_path,
+        session_id=session_id,
+        transcript_path=transcript_path,
     )
     transcript_section = _format_transcript_section(transcript)
+    summary_section = summary.strip() if summary and summary.strip() else _TODO_SUMMARY
+    highlights_section = _format_timed_items(highlights) or _TODO_HIGHLIGHTS
+    captions_section = _format_timed_items(captions) or _TODO_SCENE_CAPTIONS
 
     body = f"""{frontmatter}
 ## 요약
 
-{_TODO_SUMMARY}
+{summary_section}
 
 ## 주요 순간
 
-{_TODO_HIGHLIGHTS}
+{highlights_section}
 
 ## 전사록
 
@@ -135,7 +166,7 @@ def build_session_markdown(
 
 ## 장면 캡션
 
-{_TODO_SCENE_CAPTIONS}
+{captions_section}
 """
     return body
 
@@ -149,6 +180,11 @@ def write_session_md(
     video_path: str | Path,
     transcript: Transcript,
     session_end: datetime | None = None,
+    session_id: str | None = None,
+    transcript_path: str | Path | None = None,
+    summary: str | None = None,
+    highlights: Sequence[tuple[float, str]] = (),
+    captions: Sequence[tuple[float, str]] = (),
 ) -> Path:
     """세션 md를 `vault_dir/sessions/YYYY-MM-DD_HHMM_제목.md`에 생성하고 경로를 반환한다."""
     vault_dir = Path(vault_dir)
@@ -161,6 +197,11 @@ def write_session_md(
         participants=participants,
         video_path=video_path,
         transcript=transcript,
+        session_id=session_id,
+        transcript_path=transcript_path,
+        summary=summary,
+        highlights=highlights,
+        captions=captions,
     )
 
     out_path = sessions_dir / session_filename(session_start, title)
