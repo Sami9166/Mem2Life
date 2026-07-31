@@ -6,19 +6,37 @@ import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.QuestionAnswer
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -32,38 +50,53 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusManager
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.mem2life.companion.config.BackendConfigStore
 import com.mem2life.companion.recording.RecordingForegroundService
+import com.mem2life.companion.recording.RecordingSessionController
 import com.mem2life.companion.recording.RecordingState
 import kotlinx.coroutines.delay
 
 /**
- * Vuzix Blade 2 온글래스 단일 화면 UI. 푸시투톡 질의/TTS 재생은 이 화면의 범위가
- * 아니다(recall-dev 이후 작업) — 여기서는 백엔드 설정/녹화 시작·정지/업로드 상태만 다룬다.
+ * Vuzix Blade 2 온글래스 앱의 단일 Activity.
+ *
+ * 화면 구조(홈 → 기록/질문 2모드):
+ *   [홈] ── 기록 ──> [기록 화면] 녹화 시작/정지·업로드 상태
+ *       └─ 질문 ──> [질문 화면] 푸시투톡 → recall → TTS (구현 예정)
+ *       └─ 설정 ──> [설정 화면] 백엔드 host/port·디버그
  *
  * Blade 2 UI 제약:
- *  - 디스플레이 480x480, 웨이브가이드 특성상 검정 = 투명 → 순수 검정 배경의
- *    다크 테마를 쓴다(Vuzix 공식 가이드라인).
- *  - 터치스크린이 없다. 관자놀이 터치패드가 트랙볼/D-pad 이벤트로 들어오므로
- *    모든 조작 요소는 포커스 이동(스와이프) + 탭(클릭)으로 동작해야 한다 —
- *    Compose의 Button/Checkbox/TextField는 기본적으로 포커스 내비게이션을
- *    지원하므로 별도 처리 없이 동작한다.
+ *  - 디스플레이 480x480, 웨이브가이드 특성상 검정 = 투명 → 순수 검정 배경 + 밝은
+ *    전경의 다크 테마(Vuzix 공식 가이드라인). 배경을 그리지 않는 것이 곧 시야를 비우는 것.
+ *  - 터치스크린이 없다. 관자놀이 터치패드가 D-pad(상/하/좌/우 + center) 이벤트로
+ *    들어온다. 그래서 모든 조작 요소는 (1) 포커스가 눈에 확 띄어야 하고(웨이브가이드),
+ *    (2) 포커스 이동 → center 탭으로만 동작해야 한다.
+ *  - 착용 중 glanceable해야 한다 — 화면당 요소를 최소화하고 큰 타이포·고대비를 쓴다.
  */
 class MainActivity : ComponentActivity() {
 
@@ -106,7 +139,7 @@ class MainActivity : ComponentActivity() {
             // 웨이브가이드에서 검정이 투명으로 보이므로 배경은 항상 순수 검정.
             MaterialTheme(colorScheme = darkColorScheme(background = Color.Black, surface = Color.Black)) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
-                    Mem2LifeScreen(activity = this)
+                    Mem2LifeApp(activity = this)
                 }
             }
         }
@@ -127,16 +160,25 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** 앱 내 화면. 뒤로가기(두 손가락 탭 = KEYCODE_BACK)로 홈으로 돌아온다. */
+private enum class Screen { HOME, RECORD, QUERY, SETTINGS }
+
+// Blade 2 웨이브가이드 팔레트 — 순수 검정 배경 위 밝은 전경, 포커스는 흰색으로 강조.
+private val FgPrimary = Color.White
+private val FgDim = Color(0xFFB0B0B0)
+private val FgFaint = Color(0xFF7A7A7A)
+private val FocusBorder = Color.White
+private val IdleBorder = Color(0xFF3A3A3A)
+private val FocusFill = Color(0xFF161616)
+private val RecRed = Color(0xFFFF4A4A)
+
 /**
  * 텍스트필드가 D-pad 상/하 키를 캐럿 이동으로 소비하기 전에 가로채 포커스를 넘긴다.
  *
  * Blade 2 터치패드 스와이프는 D-pad 이벤트로 들어오는데, 이 처리가 없으면 Host/Port
- * 필드에 한 번 포커스가 들어간 뒤 **녹화 버튼으로 돌아갈 방법이 없다**(실기기 확인:
+ * 필드에 한 번 포커스가 들어간 뒤 다른 요소로 돌아갈 방법이 없다(실기기 확인:
  * 위/아래 키는 필드가 삼키고, 뒤로가기는 IME만 닫을 뿐 포커스는 필드에 남는다).
  * 터치스크린이 없어 화면을 직접 누를 수도 없으므로 앱 재시작 외에는 탈출구가 없었다.
- *
- * [FocusManager.moveFocus]가 false(더 이동할 대상 없음)면 소비하지 않고 그대로 흘려
- * 기본 동작에 맡긴다.
  */
 private fun Modifier.dpadFocusEscape(focusManager: FocusManager): Modifier =
     onPreviewKeyEvent { event ->
@@ -150,44 +192,28 @@ private fun Modifier.dpadFocusEscape(focusManager: FocusManager): Modifier =
         focusManager.moveFocus(direction)
     }
 
-/** 녹화 중 컨트롤을 띄운 뒤 이만큼 입력이 없으면 다시 감춘다. */
-private const val CONTROLS_AUTO_HIDE_MS = 5_000L
-
+/**
+ * 앱 루트 — 화면 네비게이션 + 녹화 상태(전 화면에서 공유)를 소유한다.
+ *
+ * 녹화 컨트롤러는 이 컴포저블이 아니라 Application이 소유한다(녹화 중 화면 전환·재진입
+ * 에도 세션이 유지되어야 함 — 중복 세션 방지). 자세한 배경은
+ * Mem2LifeApplication.recordingController 주석 참고.
+ */
 @Composable
-private fun Mem2LifeScreen(activity: MainActivity) {
+private fun Mem2LifeApp(activity: MainActivity) {
     val context = activity
-    val focusManager = LocalFocusManager.current
-
+    val app = context.applicationContext as Mem2LifeApplication
     val backendConfigStore = remember { BackendConfigStore(context) }
 
-    // Blade 2 실기기에는 온보드 마이크가 있으므로 기본은 실제 마이크. 마이크가
-    // 없는/불안정한 개발 환경에서만 목업 오디오로 전환한다.
+    // 마이크 없는 개발 환경용 목업 오디오 토글(설정 화면에서 바꾼다). 실기기 기본은 실제 마이크.
     var useMockAudio by rememberSaveable { mutableStateOf(false) }
-
-    // 컨트롤러는 이 화면이 아니라 Application이 소유한다 — 녹화 중 뒤로가기로 나갔다가
-    // 다시 들어와도 진행 중인 세션을 그대로 이어받아야 하기 때문이다(중복 세션 방지).
-    // 자세한 배경은 Mem2LifeApplication.recordingController 주석 참고.
-    val app = context.applicationContext as Mem2LifeApplication
     val recordingController = remember(useMockAudio) { app.recordingController(useMockAudio) }
-
     val recordingState by recordingController.state.collectAsState()
-    val statusSnapshot by recordingController.statusSnapshot.collectAsState()
 
-    // 목업 오디오 체크박스는 녹화가 진행 중이 아닐 때만 바꿀 수 있다. 녹화 중에
-    // 바꾸면 remember(useMockAudio)가 컨트롤러를 새로 요청하게 되어, 진행 중인
-    // 세션(살아있는 코루틴 스코프·업로드 큐·오디오 소켓)이 UI에서 끊긴 채 남을 수
-    // 있다. 체크박스를 잠가 그 상태 자체를 만들지 않는다.
-    // (Application 쪽에서도 녹화 중이면 컨트롤러를 교체하지 않도록 이중으로 막는다.)
-    val canToggleMockAudio =
-        when (recordingState) {
-            is RecordingState.Idle, is RecordingState.Stopped, is RecordingState.Error -> true
-            else -> false
-        }
+    var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
+    val isRecording = recordingState is RecordingState.Recording
 
-    var config by remember { mutableStateOf(backendConfigStore.load()) }
-    var hostText by remember { mutableStateOf(config.host) }
-    var portText by remember { mutableStateOf(config.port.toString()) }
-
+    // 녹화 시작/종료에 맞춰 포그라운드 서비스 유지.
     LaunchedEffect(recordingState) {
         when (recordingState) {
             is RecordingState.Recording -> RecordingForegroundService.start(context)
@@ -197,19 +223,226 @@ private fun Mem2LifeScreen(activity: MainActivity) {
         }
     }
 
-    // 녹화가 시작되면 화면을 비운다. 웨이브가이드에서 검정 = 투명이라 "아무것도 그리지
-    // 않는 것"이 곧 착용자 시야를 완전히 비우는 것이다 — 착용자가 설정 화면을 계속
-    // 보고 있을 이유가 없고, 녹화·업로드는 포그라운드 서비스로 그대로 진행된다.
-    // (화면 자체를 끄지는 않는다. 앱은 포그라운드에 남아 터치패드 입력을 받아야
-    //  다시 컨트롤을 띄울 수 있기 때문이다. 디스플레이는 기기 기본 타임아웃으로 꺼진다.)
+    when (screen) {
+        Screen.HOME ->
+            HomeScreen(
+                isRecording = isRecording,
+                onRecord = { screen = Screen.RECORD },
+                onQuery = { screen = Screen.QUERY },
+                onSettings = { screen = Screen.SETTINGS },
+            )
+        Screen.RECORD -> {
+            BackHandler { screen = Screen.HOME }
+            RecordScreen(activity = activity, controller = recordingController)
+        }
+        Screen.QUERY -> {
+            BackHandler { screen = Screen.HOME }
+            QueryScreen()
+        }
+        Screen.SETTINGS -> {
+            BackHandler { screen = Screen.HOME }
+            SettingsScreen(
+                backendConfigStore = backendConfigStore,
+                useMockAudio = useMockAudio,
+                onToggleMockAudio = { useMockAudio = it },
+                canToggleMockAudio =
+                    when (recordingState) {
+                        is RecordingState.Idle, is RecordingState.Stopped, is RecordingState.Error -> true
+                        else -> false
+                    },
+            )
+        }
+    }
+}
+
+/**
+ * 홈 — 두 개의 큰 모드 카드(기록/질문) + 작은 설정 진입.
+ *
+ * 진입 시 첫 카드에 자동 포커스를 준다(D-pad로 바로 조작 가능하도록). 카드는 좌/우
+ * D-pad로 이동, center로 선택. 포커스는 흰 테두리 + 옅은 채움으로 확실히 드러낸다.
+ */
+@Composable
+private fun HomeScreen(
+    isRecording: Boolean,
+    onRecord: () -> Unit,
+    onQuery: () -> Unit,
+    onSettings: () -> Unit,
+) {
+    val firstFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { firstFocus.requestFocus() }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            "Mem2Life",
+            color = FgPrimary,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Spacer(Modifier.height(14.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            ModeCard(
+                icon = Icons.Filled.Videocam,
+                label = "기록",
+                subtitle = if (isRecording) "● 기록 중" else "보고 들은 것 저장",
+                accent = isRecording,
+                focusRequester = firstFocus,
+                onClick = onRecord,
+                modifier = Modifier.weight(1f).fillMaxSize(),
+            )
+            ModeCard(
+                icon = Icons.Filled.QuestionAnswer,
+                label = "질문",
+                subtitle = "기억에게 물어보기",
+                accent = false,
+                focusRequester = null,
+                onClick = onQuery,
+                modifier = Modifier.weight(1f).fillMaxSize(),
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+        SettingsChip(onClick = onSettings)
+    }
+}
+
+/** 홈의 큰 모드 카드. 포커스 상태를 스스로 추적해 테두리·채움·틴트로 강조한다. */
+@Composable
+private fun ModeCard(
+    icon: ImageVector,
+    label: String,
+    subtitle: String,
+    accent: Boolean,
+    focusRequester: FocusRequester?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val border = if (focused) FocusBorder else IdleBorder
+    val fill = if (focused) FocusFill else Color.Black
+    val tint = if (accent) RecRed else if (focused) FgPrimary else FgDim
+
+    Column(
+        modifier =
+            modifier
+                .clip(RoundedCornerShape(18.dp))
+                .background(fill)
+                .border(BorderStroke(if (focused) 3.dp else 1.dp, border), RoundedCornerShape(18.dp))
+                .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+                .onFocusChanged { focused = it.isFocused }
+                .clickable(onClick = onClick)
+                .padding(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(56.dp))
+        Spacer(Modifier.height(8.dp))
+        Text(label, color = if (focused) FgPrimary else FgDim, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(2.dp))
+        Text(
+            subtitle,
+            color = if (accent) RecRed else FgFaint,
+            fontSize = 12.sp,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+/** 홈 하단의 작은 설정 진입 — 포커스되면 밝아진다. */
+@Composable
+private fun SettingsChip(onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Row(
+        modifier =
+            Modifier
+                .clip(RoundedCornerShape(20.dp))
+                .border(BorderStroke(1.dp, if (focused) FocusBorder else IdleBorder), RoundedCornerShape(20.dp))
+                .onFocusChanged { focused = it.isFocused }
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(
+            Icons.Filled.Settings,
+            contentDescription = "설정",
+            tint = if (focused) FgPrimary else FgDim,
+            modifier = Modifier.size(18.dp),
+        )
+        Text("설정", color = if (focused) FgPrimary else FgDim, fontSize = 14.sp)
+    }
+}
+
+/** 질문 모드 — 푸시투톡 → recall → TTS. 다음 단계에서 구현한다. */
+@Composable
+private fun QueryScreen() {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .size(96.dp)
+                    .clip(CircleShape)
+                    .border(BorderStroke(2.dp, IdleBorder), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.Mic, contentDescription = "질문", tint = FgDim, modifier = Modifier.size(48.dp))
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("질문 모드", color = FgPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "푸시투톡 음성 질의 + TTS 응답은\n다음 단계에서 구현됩니다.",
+            color = FgFaint,
+            fontSize = 13.sp,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(10.dp))
+        Text("두 손가락 탭 = 뒤로", color = FgFaint, fontSize = 11.sp)
+    }
+}
+
+/** 녹화 중 컨트롤을 띄운 뒤 이만큼 입력이 없으면 다시 감춘다. */
+private const val CONTROLS_AUTO_HIDE_MS = 5_000L
+
+/**
+ * 기록 화면 — 유휴 시 큰 시작 버튼, 녹화 중엔 glanceable 상태(REC·경과·청크 수).
+ *
+ * 녹화가 시작되면 컨트롤을 감춰(웨이브가이드에서 검정 = 투명 → 시야를 비운다) 착용자
+ * 시야를 방해하지 않는다. 터치패드 입력이 오면 컨트롤을 다시 띄우고, 그 첫 입력은
+ * 삼킨다(안 보이는 버튼이 눌리지 않도록). 이 동작은 실기기에서 검증된 제약이다.
+ */
+@Composable
+private fun RecordScreen(activity: MainActivity, controller: RecordingSessionController) {
+    val statusSnapshot by controller.statusSnapshot.collectAsState()
+    val recordingState by controller.state.collectAsState()
     val isRecording = recordingState is RecordingState.Recording
+
     var controlsVisible by remember { mutableStateOf(true) }
     var inputTick by remember { mutableStateOf(0) }
+    var elapsedSec by remember { mutableStateOf(0) }
 
     LaunchedEffect(isRecording) { controlsVisible = !isRecording }
 
-    // 컨트롤을 띄운 뒤 입력이 없으면 다시 감춘다. inputTick이 키에 있어 입력이 올
-    // 때마다 이 효과가 재시작되며 타이머도 함께 초기화된다.
+    // 경과 시간 카운터(녹화 중에만).
+    LaunchedEffect(isRecording) {
+        elapsedSec = 0
+        while (isRecording) {
+            delay(1_000)
+            elapsedSec += 1
+        }
+    }
+
+    // 컨트롤을 띄운 뒤 입력이 없으면 다시 감춘다(입력마다 inputTick이 올라 타이머 재시작).
     LaunchedEffect(isRecording, controlsVisible, inputTick) {
         if (isRecording && controlsVisible) {
             delay(CONTROLS_AUTO_HIDE_MS)
@@ -221,7 +454,7 @@ private fun Mem2LifeScreen(activity: MainActivity) {
         activity.onTouchpadInput = {
             if (isRecording && !controlsVisible) {
                 controlsVisible = true
-                true // 복귀용으로만 쓰고 삼킨다 — 안 보이는 버튼이 눌리지 않도록.
+                true // 복귀용으로만 쓰고 삼킨다.
             } else {
                 inputTick += 1
                 false
@@ -230,88 +463,147 @@ private fun Mem2LifeScreen(activity: MainActivity) {
         onDispose { activity.onTouchpadInput = null }
     }
 
-    Scaffold(containerColor = Color.Black) { padding ->
-        if (!controlsVisible) {
-            // 녹화 중 — 아무것도 그리지 않는다(= 투명).
-            return@Scaffold
-        }
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            item {
-                Text("Mem2Life (Vuzix Blade 2)", style = MaterialTheme.typography.titleLarge)
+    if (isRecording && !controlsVisible) {
+        // 녹화 중 & 컨트롤 숨김 — 아무것도 그리지 않는다(= 투명, 시야 비움).
+        return
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        if (isRecording) {
+            // glanceable 녹화 상태.
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(modifier = Modifier.size(14.dp).clip(CircleShape).background(RecRed))
+                Text("REC", color = RecRed, fontSize = 26.sp, fontWeight = FontWeight.Bold)
             }
-
-            item { HorizontalDivider() }
-
-            item {
-                Text("녹화", style = MaterialTheme.typography.titleMedium)
-                Text("상태: $recordingState")
-                Text(
-                    "영상 청크 — 대기 중: ${statusSnapshot.pendingVideoChunks}, " +
-                        "업로드됨: ${statusSnapshot.uploadedVideoChunks}" +
-                        (statusSnapshot.lastUploadError?.let { ", 최근 오류: $it" } ?: ""),
-                )
-                Text(
-                    "오디오 WebSocket: ${statusSnapshot.audioSocketState} " +
-                        "(재연결로 인한 유실 구간 ${statusSnapshot.audioReconnectDrops}회)",
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { recordingController.startRecording() }) { Text("녹화 시작") }
-                    Button(onClick = { recordingController.stopRecording() }) { Text("녹화 종료") }
-                }
+            Spacer(Modifier.height(6.dp))
+            Text(formatElapsed(elapsedSec), color = FgPrimary, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "업로드 ${statusSnapshot.uploadedVideoChunks} · 대기 ${statusSnapshot.pendingVideoChunks}",
+                color = FgDim,
+                fontSize = 14.sp,
+            )
+            statusSnapshot.lastUploadError?.let {
+                Spacer(Modifier.height(4.dp))
+                Text("오류: $it", color = RecRed, fontSize = 11.sp, textAlign = TextAlign.Center)
             }
-
-            item { HorizontalDivider() }
-
-            item {
-                Text("백엔드 설정", style = MaterialTheme.typography.titleMedium)
-                OutlinedTextField(
-                    value = hostText,
-                    onValueChange = { hostText = it },
-                    label = { Text("Host (Blade 2 실기기: 백엔드 PC의 LAN IP)") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
-                    modifier = Modifier.fillMaxWidth().dpadFocusEscape(focusManager),
-                )
-                OutlinedTextField(
-                    value = portText,
-                    onValueChange = { portText = it },
-                    label = { Text("Port") },
-                    singleLine = true,
-                    keyboardOptions =
-                        KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
-                    modifier = Modifier.fillMaxWidth().dpadFocusEscape(focusManager),
-                )
-                Button(onClick = {
-                    val newConfig =
-                        config.copy(host = hostText, port = portText.toIntOrNull() ?: config.port)
-                    backendConfigStore.save(newConfig)
-                    config = newConfig
-                }) {
-                    Text("저장")
-                }
-            }
-
-            item { HorizontalDivider() }
-
-            item {
-                Text("디버그", style = MaterialTheme.typography.titleMedium)
-                Row {
-                    Checkbox(
-                        checked = useMockAudio,
-                        onCheckedChange = { useMockAudio = it },
-                        enabled = canToggleMockAudio,
-                    )
-                    Text(
-                        "목업 오디오 소스 사용 (마이크 없는 개발 환경용, 기본 꺼짐)" +
-                            if (!canToggleMockAudio) " — 녹화 중에는 변경 불가" else "",
-                    )
-                }
-            }
+            Spacer(Modifier.height(18.dp))
+            BigActionButton(text = "정지", accent = true, onClick = { controller.stopRecording() })
+        } else {
+            Text("기록", color = FgPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            Text(stateLabel(recordingState), color = FgDim, fontSize = 13.sp, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(20.dp))
+            BigActionButton(text = "시작", accent = false, onClick = { controller.startRecording() })
         }
     }
 }
+
+/** 큰 원형/알약 액션 버튼 — 포커스되면 채워지고 밝아진다. */
+@Composable
+private fun BigActionButton(text: String, accent: Boolean, onClick: () -> Unit) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    var focused by remember { mutableStateOf(false) }
+    val base = if (accent) RecRed else FgPrimary
+    Box(
+        modifier =
+            Modifier
+                .clip(RoundedCornerShape(28.dp))
+                .background(if (focused) base else Color.Black)
+                .border(BorderStroke(if (focused) 3.dp else 2.dp, base), RoundedCornerShape(28.dp))
+                .focusRequester(focusRequester)
+                .onFocusChanged { focused = it.isFocused }
+                .clickable(onClick = onClick)
+                .padding(horizontal = 40.dp, vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            color = if (focused) Color.Black else base,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+/** 설정 화면 — 백엔드 host/port + 디버그(목업 오디오). 스크롤 리스트. */
+@Composable
+private fun SettingsScreen(
+    backendConfigStore: BackendConfigStore,
+    useMockAudio: Boolean,
+    onToggleMockAudio: (Boolean) -> Unit,
+    canToggleMockAudio: Boolean,
+) {
+    val focusManager = LocalFocusManager.current
+    var config by remember { mutableStateOf(backendConfigStore.load()) }
+    var hostText by remember { mutableStateOf(config.host) }
+    var portText by remember { mutableStateOf(config.port.toString()) }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item { Text("설정", color = FgPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+        item { HorizontalDivider(color = IdleBorder) }
+        item {
+            Text("백엔드", color = FgDim, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            OutlinedTextField(
+                value = hostText,
+                onValueChange = { hostText = it },
+                label = { Text("Host (백엔드 PC의 LAN IP)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
+                modifier = Modifier.fillMaxWidth().dpadFocusEscape(focusManager),
+            )
+            OutlinedTextField(
+                value = portText,
+                onValueChange = { portText = it },
+                label = { Text("Port") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
+                modifier = Modifier.fillMaxWidth().dpadFocusEscape(focusManager),
+            )
+            Button(onClick = {
+                val newConfig = config.copy(host = hostText, port = portText.toIntOrNull() ?: config.port)
+                backendConfigStore.save(newConfig)
+                config = newConfig
+            }) { Text("저장") }
+        }
+        item { HorizontalDivider(color = IdleBorder) }
+        item {
+            Text("디버그", color = FgDim, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = useMockAudio, onCheckedChange = onToggleMockAudio, enabled = canToggleMockAudio)
+                Text(
+                    "목업 오디오 (마이크 없는 개발용)" +
+                        if (!canToggleMockAudio) " — 녹화 중 변경 불가" else "",
+                    color = FgDim,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+        item {
+            Spacer(Modifier.height(4.dp))
+            Text("두 손가락 탭 = 뒤로", color = FgFaint, fontSize = 11.sp)
+        }
+    }
+}
+
+private fun formatElapsed(sec: Int): String = "%02d:%02d".format(sec / 60, sec % 60)
+
+private fun stateLabel(state: RecordingState): String =
+    when (state) {
+        is RecordingState.Idle -> "대기 중"
+        is RecordingState.Starting -> "시작하는 중…"
+        is RecordingState.Recording -> "기록 중"
+        is RecordingState.Stopping -> "정지하는 중…"
+        is RecordingState.Stopped -> "정지됨 · 업로드 완료"
+        is RecordingState.Error -> "오류: ${state.message}"
+    }
