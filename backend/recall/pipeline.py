@@ -25,7 +25,7 @@ from pathlib import Path
 
 import psycopg
 
-from .answer.base import AnswerResult, Citation
+from .answer.base import AnswerGenerator, AnswerResult, Citation
 from .answer.factory import DEFAULT_PROVIDER as DEFAULT_ANSWER_PROVIDER
 from .answer.factory import get_answer_generator
 from .classify.factory import DEFAULT_PROVIDER as DEFAULT_CLASSIFIER_PROVIDER
@@ -112,6 +112,7 @@ class RecallPipeline:
         cache_path: Path | str | None = None,
         embedding_provider: str = DEFAULT_EMBEDDING_PROVIDER,
         answer_provider: str = DEFAULT_ANSWER_PROVIDER,
+        answer_generator: AnswerGenerator | None = None,
         classifier_provider: str = DEFAULT_CLASSIFIER_PROVIDER,
         video_requery_client: VideoRequeryClient | None = None,
         video_requery_provider: str = DEFAULT_VIDEO_REQUERY_PROVIDER,
@@ -147,7 +148,11 @@ class RecallPipeline:
         else:
             self.index = build_index(vault_dir, cache_path=cache_path, embedding_provider=embedding_provider)
         self.classifier = get_question_classifier(classifier_provider)
-        self.answer_generator = get_answer_generator(answer_provider)
+        # video_requery_client와 같은 이유로 인스턴스 주입을 허용한다 — 기본
+        # provider "gemini"는 GEMINI_API_KEY 유무로 실제/템플릿이 갈리므로,
+        # 환경변수 오염에 영향받으면 안 되는 회귀 테스트는 여기에
+        # TemplateAnswerGenerator를 명시적으로 넣어 고정한다.
+        self.answer_generator: AnswerGenerator = answer_generator or get_answer_generator(answer_provider)
         # 명시적으로 주입하면 그걸 쓰고(테스트/커스텀), 아니면 factory가 provider별
         # 클라이언트를 만든다. 기본 provider "gemini"는 GEMINI_API_KEY가 없으면
         # 자동으로 스텁으로 폴백하므로 API 키 없이도 파이프라인이 끝까지 돈다.
