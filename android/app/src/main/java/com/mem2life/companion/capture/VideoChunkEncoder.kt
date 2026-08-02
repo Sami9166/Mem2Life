@@ -6,13 +6,14 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.Bundle
 import android.util.Log
-import com.meta.wearable.dat.camera.types.VideoFrame
 import java.io.File
+import java.nio.ByteBuffer
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -22,11 +23,12 @@ private const val I_FRAME_INTERVAL_SEC = 2
 private const val BITRATE_BPS = 4_000_000
 
 /**
- * DAT `Stream.videoStream`에서 받은 [VideoFrame](원시 I420 YUV)을 H.264로 인코딩하고,
- * 업로드 API 계약이 요구하는 30초 mp4 청크로 잘라 [outputDir]에 순서대로 기록한다.
+ * Vuzix Blade 2 온보드 카메라(BladeCameraController)가 넘겨주는 tightly-packed
+ * I420 YUV 프레임을 H.264로 인코딩하고, 업로드 API 계약이 요구하는 30초 mp4
+ * 청크로 잘라 [outputDir]에 순서대로 기록한다.
  *
  * 내부 시간 도메인: 모든 프레젠테이션 타임스탬프는 "세션 시작 기준 상대 시각(us)"으로
- * 통일한다 — 첫 프레임의 [VideoFrame.presentationTimeUs]를 0으로 잡고, 이후 모든 값에서
+ * 통일한다 — 첫 프레임의 presentationTimeUs를 0으로 잡고, 이후 모든 값에서
  * 그 값을 빼서 인코더에 넘긴다. 그래야 청크의 `startTsSec`가 계약이 요구하는
  * "세션 시작 기준 초(start_ts)"와 정확히 같아진다.
  *
@@ -45,13 +47,38 @@ class VideoChunkEncoder(
     private val height: Int,
     private val frameRateFps: Int,
     private val chunkDurationSec: Double,
+    /**
+     * 카메라 SENSOR_ORIENTATION(도). 각 mp4 청크에 회전 힌트로 기록해 재생/분석
+     * 단계에서 보정되게 한다 — Blade 2는 180이라 이 값이 없으면 모든 청크가
+     * 뒤집힌 채 업로드된다. 픽셀을 직접 돌리지 않으므로 인코딩 비용은 0이다.
+     */
+    private val orientationHintDegrees: Int = 0,
     private val onChunkReady: (ChunkFile) -> Unit,
 ) {
+    /** MediaMuxer가 받는 값은 0/90/180/270뿐이라 그 외에는 보정을 포기한다(녹화는 계속). */
+    private val orientationHint: Int =
+        when (val normalized = orientationHintDegrees.mod(360)) {
+            0, 90, 180, 270 -> normalized
+            else -> {
+                Log.w(TAG, "지원하지 않는 회전각(${orientationHintDegrees}도) — 회전 힌트 없이 진행")
+                0
+            }
+        }
+
     private var codec: MediaCodec? = null
     private var colorFormat: Int = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
     private var muxer: MediaMuxer? = null
     private var muxerTrackIndex = -1
     private var muxerStarted = false
+
+    // MediaCodec은 INFO_OUTPUT_FORMAT_CHANGED를 코덱 수명당 딱 한 번만 낸다.
+    // 청크 로테이션으로 새 muxer를 열 때마다 이 이벤트를 다시 기다릴 수 없으므로
+    // 최초 1회 받은 출력 포맷을 캐시해 두고, 2번째 청크부터는 이 포맷으로 즉시
+    // 트랙을 추가/시작한다. (이게 없으면 seq>=1 청크가 전부 0바이트가 됐다.)
+    private var cachedOutputFormat: MediaFormat? = null
+
+    /** 현재 청크에 muxer로 실제 기록한 바이트 수(진단용 — 0이면 프레임/인코딩 경로 문제). */
+    private var currentChunkBytesWritten: Long = 0
 
     private var currentSeq = 0
     private var currentChunkFile: File? = null
@@ -65,9 +92,9 @@ class VideoChunkEncoder(
 
     private var drainJob: Job? = null
 
-    // DAT의 VideoFrame.buffer는 SDK 내부에서 재사용되는 버퍼일 수 있으므로(공식
-    // 샘플도 콜백에서 즉시 변환한다), 큐에 넣기 전에 인코더가 원하는 포맷으로 즉시
-    // 복사/변환해 둔다 — 드레인 스레드가 나중에 처리할 때 버퍼가 덮어써지는 것을 방지.
+    // BladeCameraController는 프레임마다 새 I420 배열을 할당해 넘기므로(Camera2
+    // Image는 콜백 안에서 close되기 전에 이미 복사됨) 버퍼 재사용 걱정은 없다.
+    // NV12가 필요한 인코더라면 큐에 넣기 전에 여기서 변환한다.
     private val pendingFrames = LinkedBlockingQueue<QueuedFrame>()
     @Volatile private var running = false
 
@@ -75,6 +102,7 @@ class VideoChunkEncoder(
 
     fun start(scope: CoroutineScope) {
         outputDir.mkdirs()
+        Log.i(TAG, "인코더 시작: ${width}x${height} @${frameRateFps}fps, 회전 힌트=${orientationHint}도")
         val format =
             MediaFormat.createVideoFormat(MIME_TYPE, width, height).apply {
                 setInteger(MediaFormat.KEY_BIT_RATE, BITRATE_BPS)
@@ -103,30 +131,49 @@ class VideoChunkEncoder(
     }
 
     /**
-     * DAT `Stream.videoStream`에서 새 프레임이 올 때마다 호출한다(수집 코루틴에서 호출).
-     * 여기서 즉시 인코더 컬러 포맷으로 변환/복사해 큐에 넣는다(버퍼 재사용 대비).
+     * 카메라 컨트롤러에서 새 프레임이 올 때마다 호출한다(카메라 콜백 스레드에서 호출).
+     * [i420]은 tightly-packed I420(Y, U, V 순서) 버퍼여야 하며, 호출자가 프레임마다
+     * 새로 할당해 소유권을 넘긴다. 인코더가 NV12를 요구하면 여기서 즉시 변환한다.
      */
-    fun onVideoFrame(frame: VideoFrame) {
+    fun onVideoFrame(i420: ByteArray, presentationTimeUs: Long) {
         if (!running) return
         val expectedSize = width * height * 3 / 2
-        val convertBuffer = ByteArray(expectedSize)
-        when (colorFormat) {
-            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar ->
-                YuvColorConverter.i420ToNv12(frame.buffer, width, height, convertBuffer)
-            else -> YuvColorConverter.copyI420(frame.buffer, width, height, convertBuffer)
+        if (i420.size < expectedSize) {
+            Log.w(TAG, "프레임 크기 불일치(expected>=$expectedSize, got=${i420.size}) — 드롭")
+            return
         }
-        pendingFrames.offer(QueuedFrame(convertBuffer, frame.presentationTimeUs))
+        val data =
+            when (colorFormat) {
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar -> {
+                    val convertBuffer = ByteArray(expectedSize)
+                    YuvColorConverter.i420ToNv12(ByteBuffer.wrap(i420), width, height, convertBuffer)
+                    convertBuffer
+                }
+                else -> i420
+            }
+        pendingFrames.offer(QueuedFrame(data, presentationTimeUs))
     }
 
-    /** 세션 종료 시 호출. 남은 프레임을 flush하고 마지막 청크를 마무리해 콜백한다. */
-    fun stop() {
+    /**
+     * 세션 종료 시 호출. 남은 프레임을 flush하고 마지막 청크를 마무리해 콜백한다.
+     *
+     * suspend인 이유: drainJob(드레인 코루틴)이 [codec]을 실제로 쓰는 유일한 다른
+     * 스레드다. `cancel()`만으로는 즉시 멈추지 않아, 그 코루틴이 dequeueOutputBuffer를
+     * 실행 중인데 이 함수가 encoder.stop()/release()를 호출하면 해제된 코덱에 접근해
+     * IllegalStateException으로 프로세스가 죽는다. cancelAndJoin으로 드레인 코루틴이
+     * 완전히 종료된 뒤에만 코덱을 정지/해제한다.
+     */
+    suspend fun stop() {
         running = false
-        drainJob?.cancel()
+        drainJob?.cancelAndJoin()
         drainJob = null
 
         val encoder = codec
         try {
-            encoder?.signalEndOfInputStream()
+            // byte-buffer 입력 모드에서는 EOS를 빈 입력 버퍼 + BUFFER_FLAG_END_OF_STREAM로
+            // 알린다. signalEndOfInputStream()은 Surface 입력 모드 전용이라 여기서
+            // 부르면 IllegalStateException이 난다(그래서 마지막 청크가 flush되지 않았다).
+            encoder?.let { queueEndOfStream(it) }
             encoder?.let { drainOutput(it, endOfStream = true) }
             encoder?.stop()
             encoder?.release()
@@ -195,6 +242,22 @@ class VideoChunkEncoder(
         encoder.queueInputBuffer(inputIndex, 0, frame.data.size, relativeUs, 0)
     }
 
+    /** byte-buffer 입력 모드의 EOS 신호: 빈 입력 버퍼에 END_OF_STREAM 플래그를 실어 넣는다. */
+    private fun queueEndOfStream(encoder: MediaCodec) {
+        val inputIndex = encoder.dequeueInputBuffer(INPUT_TIMEOUT_US)
+        if (inputIndex < 0) {
+            Log.w(TAG, "EOS 입력 버퍼를 얻지 못함 — 마지막 프레임 일부가 누락될 수 있음")
+            return
+        }
+        encoder.queueInputBuffer(
+            inputIndex,
+            0,
+            0,
+            lastQueuedRelativeUs,
+            MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+        )
+    }
+
     private fun drainOutput(encoder: MediaCodec, endOfStream: Boolean = false) {
         val bufferInfo = MediaCodec.BufferInfo()
         while (true) {
@@ -204,10 +267,14 @@ class VideoChunkEncoder(
                     if (!endOfStream) return
                 }
                 outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    val format = encoder.outputFormat
+                    cachedOutputFormat = format
                     val currentMuxer = muxer ?: return
-                    muxerTrackIndex = currentMuxer.addTrack(encoder.outputFormat)
-                    currentMuxer.start()
-                    muxerStarted = true
+                    if (!muxerStarted) {
+                        muxerTrackIndex = currentMuxer.addTrack(format)
+                        currentMuxer.start()
+                        muxerStarted = true
+                    }
                 }
                 outputIndex >= 0 -> {
                     val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
@@ -219,6 +286,7 @@ class VideoChunkEncoder(
                     val isConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
                     if (outputBuffer != null && bufferInfo.size > 0 && !isConfig && muxerStarted) {
                         muxer?.writeSampleData(muxerTrackIndex, outputBuffer, bufferInfo)
+                        currentChunkBytesWritten += bufferInfo.size
                     }
                     encoder.releaseOutputBuffer(outputIndex, false)
                     if (endOfStream && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
@@ -234,8 +302,22 @@ class VideoChunkEncoder(
         val fileName = "chunk_%06d.mp4".format(currentSeq)
         val file = File(outputDir, fileName)
         currentChunkFile = file
-        muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        val newMuxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        // 회전 힌트는 반드시 start() 전에 설정해야 한다(이후 호출은 IllegalStateException).
+        // 청크마다 새 muxer를 열므로 매 청크에 동일하게 넣어야 seq>=1도 보정된다.
+        if (orientationHint != 0) {
+            newMuxer.setOrientationHint(orientationHint)
+        }
+        muxer = newMuxer
         muxerStarted = false
+        // 2번째 이후 청크: 출력 포맷은 이미 알고 있으므로(캐시) 즉시 트랙 추가/시작.
+        // 첫 청크는 아직 포맷을 모르므로 drainOutput의 INFO_OUTPUT_FORMAT_CHANGED에서 시작된다.
+        val format = cachedOutputFormat
+        if (format != null) {
+            muxerTrackIndex = newMuxer.addTrack(format)
+            newMuxer.start()
+            muxerStarted = true
+        }
         Log.i(
             TAG,
             "새 청크 시작: seq=$currentSeq file=${file.name} startTs=${currentChunkStartRelativeUs / 1_000_000.0}s",
@@ -250,6 +332,7 @@ class VideoChunkEncoder(
             (newChunkFirstFrameRelativeUs - currentChunkStartRelativeUs) / 1_000_000.0
 
         finalizeMuxerOnly()
+        Log.i(TAG, "청크 마감: seq=$finishedSeq 기록바이트=$currentChunkBytesWritten")
 
         if (finishedFile != null) {
             onChunkReady(
@@ -264,6 +347,7 @@ class VideoChunkEncoder(
 
         currentSeq += 1
         pendingRotation = false
+        currentChunkBytesWritten = 0
         currentChunkStartRelativeUs = newChunkFirstFrameRelativeUs
         startNewChunk()
     }

@@ -6,11 +6,13 @@ import kotlin.math.roundToInt
  * PCM 16-bit little-endian 모노 오디오를 선형 보간으로 리샘플링하는 순수 로직.
  * 안드로이드 프레임워크 의존 없음 — JVM 단위 테스트로 검증 가능.
  *
- * 왜 필요한가: 업로드 API 계약은 16kHz를 요구하지만("리샘플링 불필요"라고 적혀
- * 있는 건 STT 입력 포맷과 이미 같다는 전제다), 실제 글래스 마이크는 Bluetooth
- * HFP 프로파일을 통해 8kHz로만 캡처된다(CLAUDE.md 알려진 리스크 참고). 따라서
- * android 클라이언트가 8kHz -> 16kHz 업샘플링을 책임진다. 데모용 목업 오디오
- * 소스가 이미 16kHz라면 리샘플링은 필요 없다(같은 rate면 그대로 반환).
+ * 왜 필요한가: 업로드 API 계약은 16kHz를 요구한다. Vuzix Blade 2 온보드 마이크는
+ * AudioRecord로 16kHz 직접 캡처가 가능해 정상 경로에서는 리샘플링이 일어나지
+ * 않지만(같은 rate면 그대로 반환), 16kHz 캡처가 안 되는 예외적인 기기/에뮬레이터
+ * 구성에서 DeviceMicAudioSource가 48kHz/44.1kHz로 폴백 캡처한 뒤 이 리샘플러로
+ * 16kHz로 맞춘다. (과거 Meta Ray-Ban 설계의 HFP 8kHz -> 16kHz 업샘플링 용도에서
+ * 폴백 용도로 역할이 바뀌었다. 선형 보간이라 다운샘플링 시 안티에일리어싱 필터는
+ * 없지만, 폴백 경로 + 음성 대역 STT 입력이라는 용도에서는 허용 범위다.)
  */
 object PcmResampler {
 

@@ -3,8 +3,8 @@ package com.mem2life.companion.capture
 import java.nio.ByteBuffer
 
 /**
- * DAT `VideoFrame`은 I420(플레인 순서 Y, U, V) 원시 버퍼를 제공한다(공식 CameraAccess
- * 샘플의 YuvToBitmapConverter가 그렇게 취급한다). 반면 MediaCodec 하드웨어 인코더는
+ * BladeCameraController가 Camera2 YUV_420_888 이미지를 tightly-packed I420
+ * (플레인 순서 Y, U, V)으로 정규화해 넘긴다. 반면 MediaCodec 하드웨어 인코더는
  * 기기에 따라 NV12(세미플레인, Y 다음에 U/V 인터리브)만 지원하는 경우가 많다.
  * 이 컨버터는 인코더가 보고한 ColorFormat에 맞춰 필요할 때만 변환한다.
  */

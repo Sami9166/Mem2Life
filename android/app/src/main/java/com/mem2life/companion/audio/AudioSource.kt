@@ -5,12 +5,11 @@ import kotlinx.coroutines.CoroutineScope
 /**
  * 마이크 오디오 소스 추상화.
  *
- * 중요: Meta DAT SDK(mwdat-camera/mwdat-core)는 오디오 캡처 API를 제공하지 않는다.
- * 실기기 마이크 접근은 SDK 밖에서 표준 Android Bluetooth HFP(Hands-Free Profile)
- * 경로로 이뤄진다 — [BluetoothScoAudioSource] 참고. Mock Device Kit 역시 카메라
- * 스트림/사진 캡처/권한/기기 상태만 시뮬레이션하고 마이크 입력은 시뮬레이션하지
- * 않으므로, 실기기 없이 오디오 파이프라인을 검증하려면 [MockPcmAudioSource]처럼
- * 별도의 목업 소스가 필요하다. 이 인터페이스가 그 둘을 교체 가능하게 만든다.
+ * Vuzix Blade 2에서는 앱이 글래스 위에서 직접 실행되므로 온보드 마이크를 표준
+ * [android.media.AudioRecord]로 캡처하는 [DeviceMicAudioSource]가 실기기 경로다.
+ * 마이크가 불안정한 개발 환경(일부 에뮬레이터 구성 등)에서 오디오 파이프라인만
+ * 검증하려면 [MockPcmAudioSource](목업 톤/에셋 PCM 반복 재생)를 쓴다.
+ * 이 인터페이스가 그 둘을 교체 가능하게 만든다.
  */
 interface AudioSource {
     /** 이 소스가 실제로 캡처하는 원본 샘플레이트(리샘플링 전). */
