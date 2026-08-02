@@ -158,18 +158,22 @@ def _memory_items(
     return tuple(items)
 
 
-def _resolve_captions(
+def resolve_captions(
     captions: Sequence[CaptionItem],
     keyframes: Sequence[ProcessedKeyframe],
     transcript: Transcript,
     *,
     media_slug: str,
-    caption_provider: str,
+    caption_provider: str = DEFAULT_CAPTION_PROVIDER,
 ) -> list[CaptionItem]:
     """호출자가 `captions`를 명시적으로 넘기면 그대로 쓰고, 아니면 VLM으로 만든다.
 
     VLM 캡션 생성 자체가 실패하면(`GeminiAPIError`) RTZR과 동일한 원칙으로
     플레이스홀더로 대체해 세션 md 생성까지는 끝까지 진행한다.
+
+    `run_ingest_pipeline`(완성 영상 1개 입력)과 `tools/ingest_from_upload.py`
+    (글래스가 청크로 올린 업로드 세션 입력) 두 진입점이 공유한다 — 실행 시점
+    폴백 규칙이 두 경로에서 갈라지지 않도록 여기 한 곳에만 둔다.
     """
     if captions:
         return list(captions)
@@ -190,19 +194,22 @@ def _resolve_captions(
         return PlaceholderVLMCaptioner().caption_keyframes(keyframes, transcript, media_slug=media_slug)
 
 
-def _resolve_summary(
+def resolve_summary(
     summary: str | None,
     transcript: Transcript,
     captions: Sequence[CaptionItem],
     participants: Sequence[str],
     *,
-    summary_provider: str,
+    summary_provider: str = DEFAULT_SUMMARY_PROVIDER,
 ) -> str | None:
     """호출자가 `summary`를 명시적으로 넘기면 그대로 쓰고, 아니면 LLM으로 만든다.
 
     LLM 요약 생성 자체가 실패하면(`GeminiAPIError`) `None`으로 대체해
     `ingest/wiki/session_md.py`의 기존 TODO 플레이스홀더에 위임한다(세션 md
     생성 자체는 끝까지 진행).
+
+    `resolve_captions`와 마찬가지로 두 진입점(CLI 영상 입력 / 업로드 세션 글루)이
+    공유한다.
     """
     if summary and summary.strip():
         return summary
@@ -357,14 +364,14 @@ def run_ingest_pipeline(
     else:
         visual_result = VisualProcessingResult(session_duration_sec=extracted.duration_sec)
 
-    resolved_captions = _resolve_captions(
+    resolved_captions = resolve_captions(
         captions,
         visual_result.processed_keyframes,
         transcript,
         media_slug=media_slug,
         caption_provider=caption_provider,
     )
-    resolved_summary = _resolve_summary(
+    resolved_summary = resolve_summary(
         summary,
         transcript,
         resolved_captions,
