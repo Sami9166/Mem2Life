@@ -266,8 +266,9 @@ class GeminiAnswerGenerator:
                 citations=citations,
                 grounded=False,
                 evidence=all_evidence,
+                body=body,
             )
 
         # 방어 3 — 인용 문구는 모델 출력이 아니라 실제 Chunk에서 만든다.
         text = f"{body} (근거: {_citation_note(citations)})"
-        return AnswerResult(text=text, citations=citations, grounded=True, evidence=all_evidence)
+        return AnswerResult(text=text, citations=citations, grounded=True, evidence=all_evidence, body=body)

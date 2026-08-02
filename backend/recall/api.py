@@ -42,8 +42,32 @@ class FallbackOut(BaseModel):
     stub_result: str | None
 
 
+class GlassEvidenceOut(BaseModel):
+    label: str = Field(..., description='"어제 15:01 · 제주도_여행_계획" 형태의 짧은 근거 라벨')
+    video_link: str | None = Field(None, description="탭하면 그 구간을 재생할 영상 딥링크")
+
+
+class GlassOut(BaseModel):
+    """글래스(Blade 2) 출력 전용 표현 — 앱은 이 필드만 보면 된다.
+
+    `tts_text`는 스피커로 그대로 읽으면 되고, `display_text` + `evidence`는
+    480x480 웨이브가이드에 올리면 되도록 이미 짧게 다듬어져 있다. 줄바꿈은
+    폰트 메트릭을 아는 앱이 하도록 남겨둔다.
+    """
+
+    status: str = Field(..., description="answered | answered_from_video | not_found")
+    status_label: str = Field(..., description='화면 상단 상태 문구("기록 확인됨" 등)')
+    tts_text: str
+    display_text: str
+    evidence: list[GlassEvidenceOut]
+
+
 class RecallQueryResponse(BaseModel):
-    """TTS 재생용(`tts_text`)과 화면 표시용(나머지 필드) 응답을 함께 담는다."""
+    """글래스 출력용(`glass`)과 디버깅/데스크톱용(나머지 필드)을 함께 담는다.
+
+    앱은 `glass`만 쓰면 되고, 나머지는 CLI 출력·회귀 테스트·문제 추적용이다.
+    최상위 `tts_text`는 `glass.tts_text`와 같은 값이다(기존 호출부 호환).
+    """
 
     tts_text: str
     answer_text: str
@@ -51,6 +75,7 @@ class RecallQueryResponse(BaseModel):
     grounded: bool
     citations: list[CitationOut]
     fallback: FallbackOut
+    glass: GlassOut
 
 
 class HealthResponse(BaseModel):
@@ -84,13 +109,21 @@ def create_recall_router(pipeline: RecallPipeline) -> APIRouter:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
         display = result.to_display_dict()
+        glass = display["glass"]
         return RecallQueryResponse(
-            tts_text=result.tts_text,
+            tts_text=glass["tts_text"],
             answer_text=display["answer_text"],
             question_type=display["question_type"],
             grounded=display["grounded"],
             citations=[CitationOut(**c) for c in display["citations"]],
             fallback=FallbackOut(**display["fallback"]),
+            glass=GlassOut(
+                status=glass["status"],
+                status_label=glass["status_label"],
+                tts_text=glass["tts_text"],
+                display_text=glass["display_text"],
+                evidence=[GlassEvidenceOut(**e) for e in glass["evidence"]],
+            ),
         )
 
     return router
