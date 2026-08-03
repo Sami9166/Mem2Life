@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Android 11+ 패키지 가시성: 푸시투톡 질의의 온디바이스 STT(음성 인식)와
+         답변 TTS(음성 합성) 서비스를 조회하려면 이 <queries>가 필요하다
+         (없으면 SpeechRecognizer.isRecognitionAvailable / TTS가 서비스를 못 찾는다). -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <!-- Vuzix Blade 2 온보드 카메라(Camera2) / 마이크(AudioRecord) 직접 캡처.
          앱이 글래스 위에서 단독 실행되므로 원격 스트림용 Bluetooth 권한은 필요 없다. -->
     <uses-permission android:name="android.permission.CAMERA" />

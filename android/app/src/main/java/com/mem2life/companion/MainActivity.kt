@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -77,6 +78,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.mem2life.companion.config.BackendConfigStore
+import com.mem2life.companion.net.RecallApiClient
+import com.mem2life.companion.query.QueryUiState
+import com.mem2life.companion.query.VoiceQueryController
 import com.mem2life.companion.recording.RecordingForegroundService
 import com.mem2life.companion.recording.RecordingSessionController
 import com.mem2life.companion.recording.RecordingState
@@ -237,7 +241,7 @@ private fun Mem2LifeApp(activity: MainActivity) {
         }
         Screen.QUERY -> {
             BackHandler { screen = Screen.HOME }
-            QueryScreen()
+            QueryScreen(backendConfigStore = backendConfigStore)
         }
         Screen.SETTINGS -> {
             BackHandler { screen = Screen.HOME }
@@ -379,36 +383,128 @@ private fun SettingsChip(onClick: () -> Unit) {
     }
 }
 
-/** 질문 모드 — 푸시투톡 → recall → TTS. 다음 단계에서 구현한다. */
+/**
+ * 질문 모드 — 푸시투톡 음성 질의 → recall 검색·답변 → TTS 재생 + 화면 표시.
+ *
+ * 상태: Idle(탭 대기) → Listening(듣는 중) → Thinking(질의 중) → Answered/Error.
+ * SpeechRecognizer/TextToSpeech는 기기에 음성 서비스가 있어야 동작한다(Blade 2
+ * 실기기 검증 필요 — VoiceQueryController 주석 참고). 화면을 떠나면 자원을 해제한다.
+ */
 @Composable
-private fun QueryScreen() {
+private fun QueryScreen(backendConfigStore: BackendConfigStore) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val controller =
+        remember {
+            VoiceQueryController(
+                context = context,
+                scope = scope,
+                recallClient = RecallApiClient { backendConfigStore.load() },
+            )
+        }
+    DisposableEffect(controller) { onDispose { controller.release() } }
+
+    val state by controller.state.collectAsState()
+
     Column(
-        modifier = Modifier.fillMaxSize().padding(20.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Box(
-            modifier =
-                Modifier
-                    .size(96.dp)
-                    .clip(CircleShape)
-                    .border(BorderStroke(2.dp, IdleBorder), CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(Icons.Filled.Mic, contentDescription = "질문", tint = FgDim, modifier = Modifier.size(48.dp))
+        when (val s = state) {
+            is QueryUiState.Idle ->
+                MicPrompt(
+                    label = "질문하기",
+                    hint = "탭하고 질문을 말하세요",
+                    listening = false,
+                    onTap = { controller.startListening() },
+                )
+
+            is QueryUiState.Listening ->
+                MicPrompt(
+                    label = "듣는 중…",
+                    hint = s.partial.ifEmpty { "질문을 말하세요" },
+                    listening = true,
+                    onTap = { controller.stopListening() },
+                )
+
+            is QueryUiState.Thinking -> {
+                CircularProgressIndicator(color = FgPrimary, strokeWidth = 3.dp)
+                Spacer(Modifier.height(14.dp))
+                Text("찾는 중…", color = FgPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Text("\"${s.question}\"", color = FgDim, fontSize = 13.sp, textAlign = TextAlign.Center)
+            }
+
+            is QueryUiState.Answered -> AnswerView(s, onAskAgain = { controller.startListening() })
+
+            is QueryUiState.Error -> {
+                Text("문제가 있었어요", color = RecRed, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Text(s.message, color = FgDim, fontSize = 12.sp, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(16.dp))
+                BigActionButton(text = "다시 질문", accent = false, onClick = { controller.startListening() })
+            }
         }
-        Spacer(Modifier.height(16.dp))
-        Text("질문 모드", color = FgPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "푸시투톡 음성 질의 + TTS 응답은\n다음 단계에서 구현됩니다.",
-            color = FgFaint,
-            fontSize = 13.sp,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(10.dp))
-        Text("두 손가락 탭 = 뒤로", color = FgFaint, fontSize = 11.sp)
     }
+}
+
+/** 마이크 프롬프트 — 큰 원형 버튼(탭=듣기 시작/정지). 듣는 중엔 강조색. */
+@Composable
+private fun MicPrompt(label: String, hint: String, listening: Boolean, onTap: () -> Unit) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    var focused by remember { mutableStateOf(false) }
+    val ring = if (listening) RecRed else if (focused) FocusBorder else IdleBorder
+
+    Box(
+        modifier =
+            Modifier
+                .size(104.dp)
+                .clip(CircleShape)
+                .background(if (focused && !listening) FocusFill else Color.Black)
+                .border(BorderStroke(if (listening || focused) 3.dp else 1.dp, ring), CircleShape)
+                .focusRequester(focusRequester)
+                .onFocusChanged { focused = it.isFocused }
+                .clickable(onClick = onTap),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Filled.Mic,
+            contentDescription = label,
+            tint = if (listening) RecRed else if (focused) FgPrimary else FgDim,
+            modifier = Modifier.size(52.dp),
+        )
+    }
+    Spacer(Modifier.height(14.dp))
+    Text(label, color = FgPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(4.dp))
+    Text(hint, color = FgFaint, fontSize = 12.sp, textAlign = TextAlign.Center)
+}
+
+/** 답변 화면 — 상태 라벨 + 본문 + 근거. TTS는 컨트롤러가 자동 재생한다. */
+@Composable
+private fun AnswerView(answered: QueryUiState.Answered, onAskAgain: () -> Unit) {
+    val answer = answered.answer
+    val statusColor = if (answer.status == "not_found") FgDim else FgPrimary
+
+    Text(answer.statusLabel, color = statusColor, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(8.dp))
+    Text(
+        answer.displayText,
+        color = FgPrimary,
+        fontSize = 17.sp,
+        textAlign = TextAlign.Center,
+        lineHeight = 22.sp,
+    )
+    if (answer.evidence.isNotEmpty()) {
+        Spacer(Modifier.height(10.dp))
+        answer.evidence.take(2).forEach { ev ->
+            Text("· ${ev.label}", color = FgFaint, fontSize = 11.sp, textAlign = TextAlign.Center)
+        }
+    }
+    Spacer(Modifier.height(16.dp))
+    BigActionButton(text = "다시 질문", accent = false, onClick = onAskAgain)
 }
 
 /** 녹화 중 컨트롤을 띄운 뒤 이만큼 입력이 없으면 다시 감춘다. */
@@ -543,6 +639,7 @@ private fun SettingsScreen(
     var config by remember { mutableStateOf(backendConfigStore.load()) }
     var hostText by remember { mutableStateOf(config.host) }
     var portText by remember { mutableStateOf(config.port.toString()) }
+    var recallPortText by remember { mutableStateOf(config.recallPort.toString()) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -564,14 +661,28 @@ private fun SettingsScreen(
             OutlinedTextField(
                 value = portText,
                 onValueChange = { portText = it },
-                label = { Text("Port") },
+                label = { Text("Port (업로드 수신)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+                keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
+                modifier = Modifier.fillMaxWidth().dpadFocusEscape(focusManager),
+            )
+            OutlinedTextField(
+                value = recallPortText,
+                onValueChange = { recallPortText = it },
+                label = { Text("Recall Port (질의응답)") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
                 modifier = Modifier.fillMaxWidth().dpadFocusEscape(focusManager),
             )
             Button(onClick = {
-                val newConfig = config.copy(host = hostText, port = portText.toIntOrNull() ?: config.port)
+                val newConfig =
+                    config.copy(
+                        host = hostText,
+                        port = portText.toIntOrNull() ?: config.port,
+                        recallPort = recallPortText.toIntOrNull() ?: config.recallPort,
+                    )
                 backendConfigStore.save(newConfig)
                 config = newConfig
             }) { Text("저장") }
