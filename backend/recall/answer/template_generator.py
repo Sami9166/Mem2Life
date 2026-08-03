@@ -52,4 +52,6 @@ class TemplateAnswerGenerator:
         citation_note = " / ".join(citation_labels.keys())
 
         text = f"{body} (근거: {citation_note})"
-        return AnswerResult(text=text, citations=citations, grounded=True, evidence=tuple(evidence))
+        return AnswerResult(
+            text=text, citations=citations, grounded=True, evidence=tuple(evidence), body=body
+        )

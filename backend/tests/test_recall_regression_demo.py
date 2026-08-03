@@ -16,7 +16,9 @@ from pathlib import Path
 
 import pytest
 
+from recall.answer.template_generator import TemplateAnswerGenerator
 from recall.classify.question_type import QuestionType
+from recall.fallback.trigger import StubVideoRequeryClient
 from recall.pipeline import RecallPipeline
 from recall.search.coarse_to_fine import coarse_to_fine_search
 
@@ -24,7 +26,20 @@ from recall.search.coarse_to_fine import coarse_to_fine_search
 @pytest.fixture(scope="module")
 def pipeline(mock_vault_dir: Path, tmp_path_factory: pytest.TempPathFactory) -> RecallPipeline:
     cache_path = tmp_path_factory.mktemp("recall_regression_cache") / "cache.json"
-    return RecallPipeline(mock_vault_dir, cache_path=cache_path)
+    # video_requery_client / answer_generator를 오프라인 구현으로 명시 주입한다 —
+    # 이 fixture가 module-scope라 함수별 autouse 크레덴셜 클리어(conftest.py)보다
+    # 먼저 생성될 수 있고, 그 순간 실제 backend/.env의 GEMINI_API_KEY가 process
+    # 환경에 남아있으면(예: 같은 세션에서 앞서 실행된 CLI e2e 테스트가
+    # load_dotenv()를 호출한 경우) factory가 실제 Gemini 클라이언트를 골라
+    # 이 회귀 테스트가 진짜 네트워크를 타는 사고가 난다 — 실제로 재현됨.
+    # 아래 단언들은 템플릿 생성기가 근거 문장을 그대로 인용한다는 전제(예:
+    # "발표자료"/"15만원"이 답변 문구에 그대로 등장)에 의존하므로 더더욱 고정이 필요하다.
+    return RecallPipeline(
+        mock_vault_dir,
+        cache_path=cache_path,
+        answer_generator=TemplateAnswerGenerator(),
+        video_requery_client=StubVideoRequeryClient(),
+    )
 
 
 def test_highlights_do_not_crowd_out_distinct_sessions(pipeline: RecallPipeline) -> None:
@@ -97,12 +112,13 @@ def test_q3_book_title_triggers_fallback_without_fabricating(pipeline: RecallPip
     # 안 된다(있다면 지어낸 것이다).
     assert "『" not in result.final_text and "」" not in result.final_text
 
-    # fallback 대상 영상 구간은 세션 A(어제) 영상이어야 하고, 재조회는
-    # 아직 스텁이라는 점이 stub 결과 문구에 드러나야 한다.
+    # fallback 대상 영상 구간은 세션 A(어제) 영상이어야 하고, 이 테스트 환경엔
+    # GEMINI_API_KEY가 없으므로(conftest가 비움) 재조회가 스텁으로 폴백돼
+    # "미수행"이 결과 문구에 드러나야 한다(지어낸 답이 아님).
     assert result.fallback.clip_targets
     assert all("test_session_A" in target.video_path for target in result.fallback.clip_targets)
     assert result.fallback_stub_result is not None
-    assert "구현되지 않았습니다" in result.fallback_stub_result
+    assert "미수행" in result.fallback_stub_result
 
 
 def test_q3_evidence_includes_scene_caption_about_the_book(pipeline: RecallPipeline) -> None:

@@ -45,6 +45,13 @@ def test_grounded_answer_includes_evidence_text_and_citation() -> None:
     assert result.citations[0].timestamp_label == "[15:00:50]"
 
 
-def test_factory_default_provider_is_template() -> None:
+def test_factory_default_falls_back_to_template_without_api_key() -> None:
+    """기본 provider는 "gemini"지만, GEMINI_API_KEY가 없으면 생성 시점에 템플릿으로
+    폴백한다(conftest.py의 autouse fixture가 키를 비워 이 조건을 보장한다) —
+    "API 키 없이도 끝까지 동작한다"는 1단계 목표를 이 테스트가 지킨다."""
     gen = get_answer_generator()
     assert isinstance(gen, TemplateAnswerGenerator)
+
+
+def test_factory_template_provider_can_be_requested_explicitly() -> None:
+    assert isinstance(get_answer_generator("template"), TemplateAnswerGenerator)

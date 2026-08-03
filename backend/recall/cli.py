@@ -93,12 +93,19 @@ def _run_ask(args: argparse.Namespace) -> int:
     reference_date = args.reference_date or date.today()
     result = pipeline.answer_question(args.question, reference_date=reference_date)
 
+    glass = result.glass
     print(f"[질문] {args.question}")
     print(f"[분류] {result.question_type.value}")
     print(f"[답변] {result.final_text}")
-    print(f"[TTS ] {result.tts_text}")
+    # 글래스에 실제로 나갈 형태 — 스피커로 읽힐 문장과 480x480 화면에 올라갈
+    # 내용을 그대로 미리 보여준다(데모 리허설에서 어색한 문구를 미리 잡으려고).
+    print(f"[글래스 음성] {glass.tts_text}")
+    print(f"[글래스 화면] {glass.status_label} | {glass.display_text}")
+    for e in glass.evidence:
+        link = f" → {e.video_link}" if e.video_link else ""
+        print(f"             · {e.label}{link}")
     if result.citations:
-        print("[근거]")
+        print("[근거 전체]")
         for c in result.citations:
             video = f" ({c.video_link})" if c.video_link else ""
             print(f"  - {c.label}{video}: {c.excerpt}")
