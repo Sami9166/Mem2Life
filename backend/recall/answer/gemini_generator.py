@@ -248,6 +248,25 @@ class GeminiAnswerGenerator:
 
         sentinel, body = split_sentinel(raw)
 
+        if sentinel == _UNGROUNDED_SENTINEL:
+            # 근거는 검색됐지만 답을 확정할 수 없다 → 지어내지 말고 fallback
+            # (영상 재조회)으로 넘긴다. grounded=False가 그 스위치다.
+            #
+            # 이 분기는 "형식 불명확(sentinel is None or not body)" 검사보다
+            # **먼저** 와야 한다: 모델이 프롬프트를 어기고 `[근거부족]`만 뱉고
+            # 설명 문장을 안 쓰면(body가 빈 문자열) 그건 여전히 "확정 불가" 신호다.
+            # 뒤에 두면 `not body`가 먼저 걸려 템플릿(grounded=True)으로 떨어지고,
+            # 모델이 "답 못 함"이라 판단한 근거를 짜깁기한 답이 fallback 없이 나가
+            # "틀린 답은 답 없는 것보다 나쁘다" 원칙이 뒤집힌다. body가 비어도
+            # NO_ANSWER_IN_EVIDENCE_TEXT가 있어 사용자 문구는 비지 않는다.
+            return AnswerResult(
+                text=f"{NO_ANSWER_IN_EVIDENCE_TEXT} {body}".strip(),
+                citations=citations,
+                grounded=False,
+                evidence=all_evidence,
+                body=body,
+            )
+
         if sentinel is None or not body:
             # 방어 2 — 형식이 불명확하면 모델 문장을 신뢰하지 않고 안전한 템플릿
             # 답변으로 되돌린다(근거 문장을 그대로 인용하므로 지어낼 수 없다).
@@ -257,17 +276,6 @@ class GeminiAnswerGenerator:
                 file=sys.stderr,
             )
             return self._fallback.generate(question, all_evidence)
-
-        if sentinel == _UNGROUNDED_SENTINEL:
-            # 근거는 검색됐지만 답을 확정할 수 없다 → 지어내지 말고 fallback
-            # (영상 재조회)으로 넘긴다. grounded=False가 그 스위치다.
-            return AnswerResult(
-                text=f"{NO_ANSWER_IN_EVIDENCE_TEXT} {body}".strip(),
-                citations=citations,
-                grounded=False,
-                evidence=all_evidence,
-                body=body,
-            )
 
         # 방어 3 — 인용 문구는 모델 출력이 아니라 실제 Chunk에서 만든다.
         text = f"{body} (근거: {_citation_note(citations)})"

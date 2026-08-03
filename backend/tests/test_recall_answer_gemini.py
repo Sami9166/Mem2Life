@@ -155,6 +155,21 @@ def test_ungrounded_sentinel_marks_answer_not_grounded() -> None:
     assert "책 제목이 나오지 않습니다" in result.text
 
 
+def test_ungrounded_sentinel_without_body_still_marks_not_grounded() -> None:
+    """모델이 프롬프트를 어기고 `[근거부족]`만 뱉고 설명 문장을 안 써도(body 빈 문자열)
+    여전히 grounded=False여야 한다.
+
+    이 검사가 "형식 불명확(not body)" 검사보다 먼저 오지 않으면, 빈 본문 `[근거부족]`이
+    템플릿 답변(grounded=True)으로 떨어져 모델이 "답 못 함"이라 판단한 근거를 짜깁기한
+    답이 fallback 없이 나간다 — 안전 의도가 정확히 뒤집힌다."""
+    gen = GeminiAnswerGenerator(client=_FakeClient(text="[근거부족]"), env={})
+
+    result = gen.generate("민수가 보여준 책 제목이 뭐였지?", [_EV])
+
+    assert result.grounded is False, "빈 본문이어도 [근거부족]은 grounded=False로 fallback을 트리거해야 한다"
+    assert NO_ANSWER_IN_EVIDENCE_TEXT.split(" —")[0] in result.text
+
+
 def test_sentinel_on_same_line_as_body_is_parsed() -> None:
     sentinel, body = split_sentinel("[답변] 15만원으로 정했어요.")
     assert sentinel == "답변"
