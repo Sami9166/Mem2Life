@@ -25,24 +25,30 @@ from pathlib import Path
 
 import psycopg
 
-from .answer.base import AnswerResult, Citation
+from .answer.base import AnswerGenerator, AnswerResult, Citation
 from .answer.factory import DEFAULT_PROVIDER as DEFAULT_ANSWER_PROVIDER
 from .answer.factory import get_answer_generator
 from .classify.factory import DEFAULT_PROVIDER as DEFAULT_CLASSIFIER_PROVIDER
 from .classify.factory import get_question_classifier
 from .classify.question_type import QuestionType
+from .fallback.factory import DEFAULT_PROVIDER as DEFAULT_VIDEO_REQUERY_PROVIDER
+from .fallback.factory import get_video_requery_client
 from .fallback.trigger import (
     FallbackDecision,
-    StubVideoRequeryClient,
     VideoRequeryClient,
     decide_fallback,
 )
 from .index.embeddings.factory import DEFAULT_PROVIDER as DEFAULT_EMBEDDING_PROVIDER
 from .index.postgres_store import PostgresIndex, build_postgres_index
 from .index.store import RefreshStats, VaultIndex, build_index
+from .present.glass import (
+    NOT_FOUND_DISPLAY,
+    AnswerStatus,
+    GlassAnswer,
+    build_glass_answer,
+    strip_requery_sentinel,
+)
 from .search.coarse_to_fine import RetrievalResult, coarse_to_fine_search
-
-_FALLBACK_NOTICE_PREFIX = "기록에 없음 — 텍스트 근거가 부족합니다. 영상을 확인하고 있어요."
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,12 +61,28 @@ class RecallAnswer:
     retrieval: RetrievalResult
     fallback: FallbackDecision
     fallback_stub_result: str | None
-    final_text: str  # 사용자에게 실제로 보여줄/읽어줄 최종 텍스트
+    final_text: str  # 사용자에게 실제로 보여줄 최종 텍스트(인용 표기 포함, CLI/로그용)
+    status: AnswerStatus = AnswerStatus.ANSWERED
+    # 인용 표기를 뺀 본문 — 음성/글래스 화면은 이걸 쓴다. `final_text`를 그대로
+    # 읽으면 "괄호 근거 세션 …" 같은 인용 덩어리가 음성으로 나간다.
+    spoken_body: str = ""
+    # 상대 시각("어제 15:01") 표기 기준이 되는 날짜.
+    reference_date: date_type | None = None
 
     @property
     def tts_text(self) -> str:
-        """TTS 재생용 텍스트 (현재는 화면 표시 텍스트와 동일)."""
-        return self.final_text
+        """TTS 재생용 텍스트 — 인용·링크·대괄호 표기를 걷어낸 문장."""
+        return self.glass.tts_text
+
+    @property
+    def glass(self) -> GlassAnswer:
+        """글래스 출력(음성 + 480x480 화면)용 표현."""
+        return build_glass_answer(
+            status=self.status,
+            body=self.spoken_body or self.final_text,
+            citations=self.citations,
+            reference_date=self.reference_date or date_type.today(),
+        )
 
     @property
     def citations(self) -> tuple[Citation, ...]:
@@ -98,6 +120,7 @@ class RecallAnswer:
                 ],
                 "stub_result": self.fallback_stub_result,
             },
+            "glass": self.glass.to_dict(),
         }
 
 
@@ -111,8 +134,10 @@ class RecallPipeline:
         cache_path: Path | str | None = None,
         embedding_provider: str = DEFAULT_EMBEDDING_PROVIDER,
         answer_provider: str = DEFAULT_ANSWER_PROVIDER,
+        answer_generator: AnswerGenerator | None = None,
         classifier_provider: str = DEFAULT_CLASSIFIER_PROVIDER,
         video_requery_client: VideoRequeryClient | None = None,
+        video_requery_provider: str = DEFAULT_VIDEO_REQUERY_PROVIDER,
         database_url: str | None = None,
     ) -> None:
         self.index: VaultIndex | PostgresIndex
@@ -145,8 +170,17 @@ class RecallPipeline:
         else:
             self.index = build_index(vault_dir, cache_path=cache_path, embedding_provider=embedding_provider)
         self.classifier = get_question_classifier(classifier_provider)
-        self.answer_generator = get_answer_generator(answer_provider)
-        self.video_requery_client: VideoRequeryClient = video_requery_client or StubVideoRequeryClient()
+        # video_requery_client와 같은 이유로 인스턴스 주입을 허용한다 — 기본
+        # provider "gemini"는 GEMINI_API_KEY 유무로 실제/템플릿이 갈리므로,
+        # 환경변수 오염에 영향받으면 안 되는 회귀 테스트는 여기에
+        # TemplateAnswerGenerator를 명시적으로 넣어 고정한다.
+        self.answer_generator: AnswerGenerator = answer_generator or get_answer_generator(answer_provider)
+        # 명시적으로 주입하면 그걸 쓰고(테스트/커스텀), 아니면 factory가 provider별
+        # 클라이언트를 만든다. 기본 provider "gemini"는 GEMINI_API_KEY가 없으면
+        # 자동으로 스텁으로 폴백하므로 API 키 없이도 파이프라인이 끝까지 돈다.
+        self.video_requery_client: VideoRequeryClient = video_requery_client or get_video_requery_client(
+            video_requery_provider
+        )
 
     @property
     def index_mode(self) -> str:
@@ -173,9 +207,27 @@ class RecallPipeline:
 
         fallback_stub_result: str | None = None
         final_text = draft_answer.text
+        spoken_body = draft_answer.spoken_body
+        status = AnswerStatus.ANSWERED
         if fallback.triggered:
-            fallback_stub_result = self.video_requery_client.requery(question, fallback.clip_targets)
-            final_text = f"{_FALLBACK_NOTICE_PREFIX} {fallback.note}"
+            requery = self.video_requery_client.requery(question, fallback.clip_targets)
+            # 재조회 원문(성공/실패 불문)은 디버깅용으로 sentinel까지 그대로 보존한다.
+            fallback_stub_result = requery.answer_text
+            if requery.grounded:
+                # 영상에서 실제 근거를 찾았다 → 재답변으로 승격(CLAUDE.md ③단계).
+                # 프롬프트가 강제한 "[확인됨]" sentinel은 판정에만 쓰고 사용자에게는
+                # 보여주지 않는다(표현 계층에서 제거).
+                status = AnswerStatus.ANSWERED_FROM_VIDEO
+                final_text = strip_requery_sentinel(requery.answer_text)
+                spoken_body = final_text
+            else:
+                # 텍스트도 영상도 근거가 없다 → 지어내지 않고 정직하게 실패.
+                # 이전에는 내부 판정 사유(fallback.note — "Gemini(영상 입력)로
+                # 재조회합니다")까지 사용자 문구에 붙었는데, 구현 얘기라 걷어냈다.
+                # 판정 사유가 필요하면 `fallback.verdict.reason`으로 따로 볼 수 있다.
+                status = AnswerStatus.NOT_FOUND
+                final_text = NOT_FOUND_DISPLAY
+                spoken_body = NOT_FOUND_DISPLAY
 
         return RecallAnswer(
             question=question,
@@ -185,4 +237,7 @@ class RecallPipeline:
             fallback=fallback,
             fallback_stub_result=fallback_stub_result,
             final_text=final_text,
+            status=status,
+            spoken_body=spoken_body,
+            reference_date=reference_date,
         )
