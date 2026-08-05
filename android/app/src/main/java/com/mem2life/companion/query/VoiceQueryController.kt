@@ -8,8 +8,8 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.util.Log
-import com.mem2life.companion.net.GlassAnswer
 import com.mem2life.companion.net.RecallApiClient
+import com.mem2life.companion.net.RecallResult
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,7 +30,7 @@ sealed interface QueryUiState {
     data object Idle : QueryUiState
     data class Listening(val partial: String) : QueryUiState
     data class Thinking(val question: String) : QueryUiState
-    data class Answered(val question: String, val answer: GlassAnswer) : QueryUiState
+    data class Answered(val question: String, val result: RecallResult) : QueryUiState
     data class Error(val message: String) : QueryUiState
 }
 
@@ -168,9 +168,9 @@ class VoiceQueryController(
             val result = recallClient.query(question)
             withContext(Dispatchers.Main) {
                 result.fold(
-                    onSuccess = { answer ->
-                        _state.value = QueryUiState.Answered(question, answer)
-                        speak(answer.ttsText)
+                    onSuccess = { recallResult ->
+                        _state.value = QueryUiState.Answered(question, recallResult)
+                        speak(recallResult.glass.ttsText)
                     },
                     onFailure = {
                         _state.value =

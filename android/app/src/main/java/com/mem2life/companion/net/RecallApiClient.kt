@@ -17,6 +17,25 @@ private const val TAG = "Mem2Life:RecallApi"
 data class GlassEvidence(val label: String, val videoLink: String?)
 
 /**
+ * 답변 근거 1건(원문 포함) — 응답 최상위 `citations` 항목.
+ *
+ * glass.evidence는 짧은 라벨만 담지만, 이건 [excerpt](위키 원문 발췌)까지 있어
+ * "근거 보기" 화면에서 실제 기록 내용을 글래스에 띄우는 데 쓴다.
+ */
+data class Citation(
+    val label: String,
+    val excerpt: String,
+    val timestamp: String?,
+    val videoLink: String?,
+)
+
+/** recall 질의 1회 결과 — 글래스 표시용([glass]) + 근거 원문([citations]). */
+data class RecallResult(
+    val glass: GlassAnswer,
+    val citations: List<Citation>,
+)
+
+/**
  * 글래스 출력 전용 응답 표현 — recall API의 `glass` 필드를 그대로 담는다.
  *
  * 앱은 이 데이터만 렌더하면 된다: [ttsText]는 스피커로 읽고, [displayText]와
@@ -73,7 +92,7 @@ class RecallApiClient(private val configProvider: () -> BackendConfig) {
             .readTimeout(60, TimeUnit.SECONDS)
             .build()
 
-    suspend fun query(question: String): Result<GlassAnswer> =
+    suspend fun query(question: String): Result<RecallResult> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val config = configProvider()
@@ -92,8 +111,28 @@ class RecallApiClient(private val configProvider: () -> BackendConfig) {
                     val glass =
                         json.optJSONObject("glass")
                             ?: error("응답에 glass 필드가 없습니다(recall 서버 버전 확인)")
-                    GlassAnswer.fromGlassJson(glass)
+                    RecallResult(
+                        glass = GlassAnswer.fromGlassJson(glass),
+                        citations = parseCitations(json.optJSONArray("citations")),
+                    )
                 }
             }.onFailure { Log.w(TAG, "recall 질의 실패", it) }
+        }
+
+    private fun parseCitations(arr: org.json.JSONArray?): List<Citation> =
+        buildList {
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val c = arr.getJSONObject(i)
+                    add(
+                        Citation(
+                            label = c.optString("label"),
+                            excerpt = c.optString("excerpt"),
+                            timestamp = c.optString("timestamp").ifEmpty { null },
+                            videoLink = c.optString("video_link").ifEmpty { null },
+                        ),
+                    )
+                }
+            }
         }
 }

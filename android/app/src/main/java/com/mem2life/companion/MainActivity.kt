@@ -436,7 +436,7 @@ private fun QueryScreen(backendConfigStore: BackendConfigStore) {
                 Text("\"${s.question}\"", color = FgDim, fontSize = 13.sp, textAlign = TextAlign.Center)
             }
 
-            is QueryUiState.Answered -> AnswerView(s, onAskAgain = { controller.startListening() })
+            is QueryUiState.Answered -> AnswerView(s, onAskAgain = { controller.reset(); controller.startListening() })
 
             is QueryUiState.Error -> {
                 Text("문제가 있었어요", color = RecRed, fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -482,29 +482,82 @@ private fun MicPrompt(label: String, hint: String, listening: Boolean, onTap: ()
     Text(hint, color = FgFaint, fontSize = 12.sp, textAlign = TextAlign.Center)
 }
 
-/** 답변 화면 — 상태 라벨 + 본문 + 근거. TTS는 컨트롤러가 자동 재생한다. */
+/**
+ * 답변 화면 — 상태 라벨 + 본문 + 근거 라벨. TTS는 컨트롤러가 자동 재생한다.
+ * "근거 보기"를 누르면 위키 원문(citations.excerpt)을 글래스에 띄운다(옵션 A).
+ */
 @Composable
 private fun AnswerView(answered: QueryUiState.Answered, onAskAgain: () -> Unit) {
-    val answer = answered.answer
-    val statusColor = if (answer.status == "not_found") FgDim else FgPrimary
+    val glass = answered.result.glass
+    val citations = answered.result.citations
+    var showEvidence by remember(answered) { mutableStateOf(false) }
 
-    Text(answer.statusLabel, color = statusColor, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    if (showEvidence) {
+        BackHandler { showEvidence = false }
+        EvidenceView(citations = citations, onBack = { showEvidence = false })
+        return
+    }
+
+    val statusColor = if (glass.status == "not_found") FgDim else FgPrimary
+    Text(glass.statusLabel, color = statusColor, fontSize = 13.sp, fontWeight = FontWeight.Bold)
     Spacer(Modifier.height(8.dp))
     Text(
-        answer.displayText,
+        glass.displayText,
         color = FgPrimary,
         fontSize = 17.sp,
         textAlign = TextAlign.Center,
         lineHeight = 22.sp,
     )
-    if (answer.evidence.isNotEmpty()) {
-        Spacer(Modifier.height(10.dp))
-        answer.evidence.take(2).forEach { ev ->
+    if (glass.evidence.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        glass.evidence.take(2).forEach { ev ->
             Text("· ${ev.label}", color = FgFaint, fontSize = 11.sp, textAlign = TextAlign.Center)
         }
     }
     Spacer(Modifier.height(16.dp))
-    BigActionButton(text = "다시 질문", accent = false, onClick = onAskAgain)
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (citations.isNotEmpty()) {
+            BigActionButton(text = "근거 보기", accent = false, onClick = { showEvidence = true })
+        }
+        BigActionButton(text = "다시 질문", accent = false, onClick = onAskAgain)
+    }
+}
+
+/**
+ * 근거 원문 뷰 — 위키(옵시디언 세션 md)에서 검색된 근거 조각을 글래스에 띄운다.
+ * 새 백엔드 엔드포인트 없이 `/recall/query` 응답의 citations(원문 포함)를 그대로 쓴다.
+ * D-pad로 스크롤, 두 손가락 탭(뒤로) 또는 "돌아가기"로 답변으로 복귀.
+ */
+@Composable
+private fun EvidenceView(
+    citations: List<com.mem2life.companion.net.Citation>,
+    onBack: () -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Text("근거 (위키 기록)", color = FgPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        }
+        citations.forEach { c ->
+            item {
+                Column {
+                    Text(c.label, color = FgDim, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(3.dp))
+                    Text(c.excerpt, color = FgPrimary, fontSize = 14.sp, lineHeight = 19.sp)
+                    if (c.videoLink != null) {
+                        Spacer(Modifier.height(2.dp))
+                        Text("▶ ${c.timestamp ?: ""} 영상", color = FgFaint, fontSize = 10.sp)
+                    }
+                    HorizontalDivider(color = IdleBorder, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+        }
+        item {
+            BigActionButton(text = "돌아가기", accent = false, onClick = onBack)
+        }
+    }
 }
 
 /** 녹화 중 컨트롤을 띄운 뒤 이만큼 입력이 없으면 다시 감춘다. */
