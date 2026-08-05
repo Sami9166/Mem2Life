@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
@@ -19,6 +20,17 @@ from pydantic import BaseModel
 
 from .vault.frontmatter import split_frontmatter
 from .vault.loader import load_document, load_vault_documents
+
+# `[[대상]]` 또는 `[[대상|표시]]`에서 대상(링크 타깃)만 뽑는다(별칭은 그래프 노드가 아님).
+_WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
+
+
+def _extract_links(text: str) -> list[str]:
+    """중복 제거된 위키링크 타깃 목록(등장 순서 유지)."""
+    seen: dict[str, None] = {}
+    for match in _WIKILINK_RE.finditer(text):
+        seen.setdefault(match.group(1).strip(), None)
+    return list(seen)
 
 
 class WikiPageSummary(BaseModel):
@@ -38,6 +50,41 @@ class WikiPageResponse(BaseModel):
     title: str
     date: str | None
     body: str  # 프론트매터를 뺀 본문(마크다운). 글래스 앱은 이걸 큰 글씨로 렌더한다.
+    links: list[str]  # 이 페이지가 언급한 위키링크 대상(인물·주제) — 그래프 이웃
+
+
+class GraphNode(BaseModel):
+    id: str  # 세션은 상대경로, 엔티티(인물·주제)는 링크 텍스트
+    label: str
+    kind: str  # session | daily | entity
+    has_file: bool  # 실제 md 파일이 있는 노드인지(엔티티는 대개 False = 가상 집계)
+
+
+class GraphEdge(BaseModel):
+    source: str  # 문서 노드 id(상대경로)
+    target: str  # 링크 대상 노드 id
+
+
+class WikiGraphResponse(BaseModel):
+    """볼트 전체 위키링크 그래프 — 노드(문서+엔티티) + 엣지(문서→링크대상)."""
+
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
+
+
+class EntityMention(BaseModel):
+    path: str
+    title: str
+    date: str | None
+    excerpts: list[str]  # 그 엔티티를 언급한 줄(링크 포함 라인)
+
+
+class WikiEntityResponse(BaseModel):
+    """엔티티(인물·주제) 가상 페이지 — 파일이 없어도 백링크로 집계해 보여준다."""
+
+    name: str
+    mentioned_in: list[EntityMention]
+    related: list[str]  # 같은 문서에서 함께 등장한 다른 엔티티(그래프 이웃)
 
 
 def _resolve_within_vault(vault_dir: Path, rel_path: str) -> Path:
@@ -84,6 +131,64 @@ def create_wiki_router(vault_dir: Path) -> APIRouter:
             title=doc.title,
             date=doc.date.isoformat() if doc.date else None,
             body=body.strip(),
+            links=_extract_links(doc.raw_text),
         )
+
+    @router.get("/graph", response_model=WikiGraphResponse)
+    def graph() -> WikiGraphResponse:
+        """볼트 전체를 훑어 위키링크 그래프를 만든다.
+
+        노드 = 문서(세션 등) + 링크로 언급된 엔티티(인물·주제). 엣지 = 문서→링크대상.
+        엔티티 페이지 파일이 아직 없어도(생성 미구현) 링크만으로 그래프가 자란다.
+        """
+        docs = load_vault_documents(vault_dir)
+        file_ids = {doc.path.as_posix() for doc in docs}
+        nodes: dict[str, GraphNode] = {}
+        edges: list[GraphEdge] = []
+
+        for doc in docs:
+            doc_id = doc.path.as_posix()
+            nodes[doc_id] = GraphNode(id=doc_id, label=doc.title, kind=str(doc.kind), has_file=True)
+            for target in _extract_links(doc.raw_text):
+                if target not in nodes:
+                    nodes[target] = GraphNode(
+                        id=target, label=target, kind="entity", has_file=target in file_ids
+                    )
+                edges.append(GraphEdge(source=doc_id, target=target))
+
+        return WikiGraphResponse(nodes=list(nodes.values()), edges=edges)
+
+    @router.get("/entity", response_model=WikiEntityResponse)
+    def entity(name: str = Query(..., min_length=1, description="인물/주제 이름(위키링크 대상)")) -> WikiEntityResponse:
+        """엔티티 가상 페이지 — 이 엔티티를 링크한 문서들과 함께 등장한 다른 엔티티를 집계한다."""
+        docs = load_vault_documents(vault_dir)
+        mentions: list[EntityMention] = []
+        related: dict[str, None] = {}
+
+        for doc in docs:
+            links = _extract_links(doc.raw_text)
+            if name not in links:
+                continue
+            for other in links:
+                if other != name:
+                    related.setdefault(other, None)
+            # 이름(또는 [[이름]])이 들어간 줄을 근거 발췌로 모은다.
+            excerpts = [
+                line.strip()
+                for line in doc.raw_text.splitlines()
+                if f"[[{name}]]" in line or f"[[{name}|" in line
+            ]
+            mentions.append(
+                EntityMention(
+                    path=doc.path.as_posix(),
+                    title=doc.title,
+                    date=doc.date.isoformat() if doc.date else None,
+                    excerpts=excerpts[:3],
+                )
+            )
+
+        if not mentions:
+            raise HTTPException(status_code=404, detail=f"엔티티를 언급한 문서가 없습니다: {name}")
+        return WikiEntityResponse(name=name, mentioned_in=mentions, related=list(related))
 
     return router

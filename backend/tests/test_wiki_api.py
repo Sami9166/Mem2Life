@@ -29,11 +29,29 @@ TODO
 """
 
 
+_SESSION_MD_2 = """---
+date: 2026-08-01
+participants: ["[[화자1]]"]
+video: "/tmp/y.mp4"
+---
+## 요약
+
+[[화자1]]이 다시 등장했다.
+"""
+
+
 def _make_vault(tmp_path: Path) -> Path:
     sessions = tmp_path / "sessions"
     sessions.mkdir(parents=True)
     (sessions / "2026-07-31_1315_투자_증시_대화.md").write_text(_SESSION_MD, encoding="utf-8")
     return tmp_path
+
+
+def _make_two_session_vault(tmp_path: Path) -> Path:
+    """[[화자1]]이 두 세션 모두에 등장 → 그래프에서 두 세션을 잇는 공유 노드."""
+    vault = _make_vault(tmp_path)
+    (vault / "sessions" / "2026-08-01_0900_다른_대화.md").write_text(_SESSION_MD_2, encoding="utf-8")
+    return vault
 
 
 def _client(vault_dir: Path) -> TestClient:
@@ -86,4 +104,40 @@ def test_path_traversal_is_rejected(tmp_path: Path) -> None:
 def test_missing_page_returns_404(tmp_path: Path) -> None:
     client = _client(_make_vault(tmp_path))
     resp = client.get("/wiki/page", params={"path": "sessions/does_not_exist.md"})
+    assert resp.status_code == 404
+
+
+def test_page_includes_wikilink_targets(tmp_path: Path) -> None:
+    client = _client(_make_vault(tmp_path))
+    resp = client.get("/wiki/page", params={"path": "sessions/2026-07-31_1315_투자_증시_대화.md"})
+    assert "화자1" in resp.json()["links"]
+
+
+def test_graph_nodes_and_edges(tmp_path: Path) -> None:
+    client = _client(_make_two_session_vault(tmp_path))
+    graph = client.get("/wiki/graph").json()
+    labels = {n["label"]: n for n in graph["nodes"]}
+    # 세션 2개 + 엔티티 화자1 노드가 있어야 한다.
+    assert labels["투자_증시_대화"]["kind"] == "session"
+    assert labels["다른_대화"]["kind"] == "session"
+    assert labels["화자1"]["kind"] == "entity"
+    assert labels["화자1"]["has_file"] is False
+    # 두 세션 모두 화자1로 향하는 엣지가 있어야 한다(공유 노드).
+    sources_to_hwaja1 = {e["source"] for e in graph["edges"] if e["target"] == "화자1"}
+    assert len(sources_to_hwaja1) == 2
+
+
+def test_entity_aggregates_backlinks_across_sessions(tmp_path: Path) -> None:
+    client = _client(_make_two_session_vault(tmp_path))
+    resp = client.get("/wiki/entity", params={"name": "화자1"})
+    assert resp.status_code == 200
+    data = resp.json()
+    titles = {m["title"] for m in data["mentioned_in"]}
+    # 화자1은 두 세션 모두에서 언급된다 → 백링크 집계에 둘 다 나온다.
+    assert titles == {"투자_증시_대화", "다른_대화"}
+
+
+def test_entity_without_mentions_returns_404(tmp_path: Path) -> None:
+    client = _client(_make_vault(tmp_path))
+    resp = client.get("/wiki/entity", params={"name": "존재하지않는주제"})
     assert resp.status_code == 404

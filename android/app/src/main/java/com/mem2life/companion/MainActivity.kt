@@ -81,6 +81,7 @@ import androidx.core.content.ContextCompat
 import com.mem2life.companion.config.BackendConfigStore
 import com.mem2life.companion.net.RecallApiClient
 import com.mem2life.companion.net.WikiApiClient
+import com.mem2life.companion.net.WikiEntity
 import com.mem2life.companion.net.WikiPage
 import com.mem2life.companion.net.WikiPageSummary
 import com.mem2life.companion.query.QueryUiState
@@ -580,11 +581,21 @@ private fun EvidenceView(
     }
 }
 
+/** 위키 탐색 스택의 한 지점. 목록 ↔ 페이지 ↔ 엔티티를 오가며 그래프를 걸어다닌다. */
+private sealed interface WikiNav {
+    data object List : WikiNav
+    data class Page(val page: WikiPage) : WikiNav
+    data class Entity(val entity: WikiEntity) : WikiNav
+}
+
 /**
- * 위키 모드 — 볼트(옵시디언 세션/인물/주제) 페이지를 브라우징한다(옵션 B).
+ * 위키 모드 — 볼트 페이지 브라우징(옵션 B) + 인물·주제 그래프 탐색(옵션 C).
  *
- * recall 서버의 `/wiki/pages`(목록) → `/wiki/page`(본문)를 읽어 글래스에 띄운다.
- * 목록에서 D-pad로 페이지를 고르면 본문을 열고, 뒤로가기로 목록→홈 순으로 나간다.
+ * recall 서버의 `/wiki/pages`·`/wiki/page`·`/wiki/entity`를 읽는다. 페이지의
+ * `[[위키링크]]`를 탭하면 그 인물·주제(엔티티)로 이동하고, 엔티티에서 언급 세션이나
+ * 관련 엔티티로 다시 이동하며 그래프를 노드 단위로 걸어다닌다(480x480 논터치에
+ * 맞춘 그래프 형태 — 시각 노드-엣지 대신 연결 탐색). 뒤로가기로 스택을 되짚고,
+ * 목록에서 더 뒤로 가면 홈으로 나간다.
  */
 @Composable
 private fun WikiScreen(backendConfigStore: BackendConfigStore) {
@@ -593,8 +604,8 @@ private fun WikiScreen(backendConfigStore: BackendConfigStore) {
 
     var pages by remember { mutableStateOf<List<WikiPageSummary>?>(null) }
     var listError by remember { mutableStateOf<String?>(null) }
-    var openPage by remember { mutableStateOf<WikiPage?>(null) }
-    var pageError by remember { mutableStateOf<String?>(null) }
+    var navError by remember { mutableStateOf<String?>(null) }
+    var stack by remember { mutableStateOf<List<WikiNav>>(listOf(WikiNav.List)) }
 
     LaunchedEffect(Unit) {
         client.listPages().fold(
@@ -603,41 +614,66 @@ private fun WikiScreen(backendConfigStore: BackendConfigStore) {
         )
     }
 
-    // 페이지가 열려 있으면 뒤로가기는 목록으로(홈으로 나가지 않게 가로챈다).
-    BackHandler(enabled = openPage != null) { openPage = null }
-
-    val current = openPage
-    if (current != null) {
-        WikiPageView(page = current, onBack = { openPage = null })
-        return
+    fun openPage(path: String) {
+        navError = null
+        scope.launch {
+            client.getPage(path).fold(
+                onSuccess = { stack = stack + WikiNav.Page(it) },
+                onFailure = { navError = it.message ?: "페이지 열기 실패" },
+            )
+        }
     }
+    fun openEntity(name: String) {
+        navError = null
+        scope.launch {
+            client.getEntity(name).fold(
+                onSuccess = { stack = stack + WikiNav.Entity(it) },
+                onFailure = { navError = it.message ?: "연결된 기록이 없습니다: $name" },
+            )
+        }
+    }
+    fun back() { if (stack.size > 1) stack = stack.dropLast(1) }
 
+    // 스택이 목록보다 깊으면 뒤로가기는 스택을 되짚는다(홈으로 나가지 않게).
+    BackHandler(enabled = stack.size > 1) { back() }
+
+    when (val current = stack.last()) {
+        is WikiNav.List ->
+            WikiListView(pages = pages, listError = listError, navError = navError, onOpenPage = ::openPage)
+        is WikiNav.Page ->
+            WikiPageView(page = current.page, navError = navError, onOpenEntity = ::openEntity, onBack = ::back)
+        is WikiNav.Entity ->
+            WikiEntityView(
+                entity = current.entity,
+                navError = navError,
+                onOpenPage = ::openPage,
+                onOpenEntity = ::openEntity,
+                onBack = ::back,
+            )
+    }
+}
+
+/** 위키 목록 뷰 — 세션/문서 목록. */
+@Composable
+private fun WikiListView(
+    pages: List<WikiPageSummary>?,
+    listError: String?,
+    navError: String?,
+    onOpenPage: (String) -> Unit,
+) {
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
         Text("위키", color = FgPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         when {
             listError != null -> Text("불러오기 실패: $listError", color = RecRed, fontSize = 12.sp)
             pages == null -> Text("불러오는 중…", color = FgDim, fontSize = 13.sp)
-            pages!!.isEmpty() -> Text("아직 기록된 위키 페이지가 없습니다.", color = FgFaint, fontSize = 13.sp)
+            pages.isEmpty() -> Text("아직 기록된 위키 페이지가 없습니다.", color = FgFaint, fontSize = 13.sp)
             else ->
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    pages!!.forEach { p ->
-                        item {
-                            WikiListRow(
-                                summary = p,
-                                onClick = {
-                                    pageError = null
-                                    scope.launch {
-                                        client.getPage(p.path).fold(
-                                            onSuccess = { openPage = it },
-                                            onFailure = { pageError = it.message ?: "페이지 열기 실패" },
-                                        )
-                                    }
-                                },
-                            )
-                        }
+                    pages.forEach { p ->
+                        item { WikiListRow(summary = p, onClick = { onOpenPage(p.path) }) }
                     }
-                    pageError?.let { item { Text("오류: $it", color = RecRed, fontSize = 11.sp) } }
+                    navError?.let { item { Text("오류: $it", color = RecRed, fontSize = 11.sp) } }
                 }
         }
     }
@@ -667,9 +703,12 @@ private fun WikiListRow(summary: WikiPageSummary, onClick: () -> Unit) {
     }
 }
 
-/** 위키 페이지 본문 — 마크다운을 큰 글씨로 스크롤 표시(글래스용, 단순 렌더). */
+/**
+ * 위키 페이지 본문 — 마크다운을 큰 글씨로 스크롤 표시 + 하단에 연결(위키링크) 칩.
+ * 칩을 탭하면 그 인물·주제(엔티티)로 이동해 그래프를 걸어다닌다.
+ */
 @Composable
-private fun WikiPageView(page: WikiPage, onBack: () -> Unit) {
+private fun WikiPageView(page: WikiPage, navError: String?, onOpenEntity: (String) -> Unit, onBack: () -> Unit) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -696,10 +735,88 @@ private fun WikiPageView(page: WikiPage, onBack: () -> Unit) {
                 }
             }
         }
+        if (page.links.isNotEmpty()) {
+            item {
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider(color = IdleBorder)
+                Text("연결 (인물·주제)", color = FgDim, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+            }
+            page.links.forEach { link -> item { WikiChip(label = link, onClick = { onOpenEntity(link) }) } }
+        }
+        navError?.let { item { Text("오류: $it", color = RecRed, fontSize = 11.sp) } }
         item {
             Spacer(Modifier.height(8.dp))
-            BigActionButton(text = "목록으로", accent = false, onClick = onBack)
+            BigActionButton(text = "뒤로", accent = false, onClick = onBack)
         }
+    }
+}
+
+/**
+ * 엔티티(인물·주제) 가상 페이지 — 이 노드를 언급한 세션들(백링크) + 관련 엔티티.
+ * 세션을 탭하면 그 페이지로, 관련 엔티티를 탭하면 그 노드로 이동한다(그래프 traversal).
+ */
+@Composable
+private fun WikiEntityView(
+    entity: WikiEntity,
+    navError: String?,
+    onOpenPage: (String) -> Unit,
+    onOpenEntity: (String) -> Unit,
+    onBack: () -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        item {
+            Text("◆ ${entity.name}", color = FgPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text("인물·주제 노드", color = FgFaint, fontSize = 10.sp)
+            HorizontalDivider(color = IdleBorder, modifier = Modifier.padding(vertical = 6.dp))
+            Text("언급된 세션", color = FgDim, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+        entity.mentionedIn.forEach { m ->
+            item {
+                WikiChip(
+                    label = m.title + (m.date?.let { " · $it" } ?: ""),
+                    onClick = { onOpenPage(m.path) },
+                )
+                m.excerpts.firstOrNull()?.let {
+                    Text(cleanMarkdownLine(it).take(70), color = FgFaint, fontSize = 10.sp, lineHeight = 14.sp, modifier = Modifier.padding(start = 12.dp))
+                }
+            }
+        }
+        if (entity.related.isNotEmpty()) {
+            item {
+                Spacer(Modifier.height(6.dp))
+                Text("관련 (함께 등장)", color = FgDim, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            entity.related.forEach { r -> item { WikiChip(label = r, onClick = { onOpenEntity(r) }) } }
+        }
+        navError?.let { item { Text("오류: $it", color = RecRed, fontSize = 11.sp) } }
+        item {
+            Spacer(Modifier.height(8.dp))
+            BigActionButton(text = "뒤로", accent = false, onClick = onBack)
+        }
+    }
+}
+
+/** 위키 그래프 이동용 칩(연결 노드) — 포커스되면 강조, 탭하면 그 노드로 이동. */
+@Composable
+private fun WikiChip(label: String, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (focused) FocusFill else Color.Black)
+                .border(BorderStroke(if (focused) 2.dp else 1.dp, if (focused) FocusBorder else IdleBorder), RoundedCornerShape(8.dp))
+                .onFocusChanged { focused = it.isFocused }
+                .clickable(onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("→ ", color = if (focused) FgPrimary else FgFaint, fontSize = 13.sp)
+        Text(label, color = if (focused) FgPrimary else FgDim, fontSize = 13.sp)
     }
 }
 
