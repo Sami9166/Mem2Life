@@ -130,6 +130,7 @@ class VaultIndex:
         self.cache_path = Path(cache_path) if cache_path else None
         self.embedding_client = embedding_client or get_embedding_client(embedding_provider)
         self.embedding_provider = embedding_provider
+        self.embedding_model = getattr(self.embedding_client, "model", embedding_provider)
 
         self.chunks: list[Chunk] = []
         self._embeddings: list[list[float]] = []
@@ -153,7 +154,11 @@ class VaultIndex:
             payload = json.loads(self.cache_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return
-        if payload.get("embedding_provider") != self.embedding_provider:
+        if (
+            payload.get("embedding_provider") != self.embedding_provider
+            or payload.get("embedding_model") != self.embedding_model
+            or payload.get("embedding_dim") != self.embedding_client.dim
+        ):
             # provider가 바뀌면 벡터 차원이 달라질 수 있으므로 캐시 전체 무효화
             return
         self._file_meta = payload.get("files", {})
@@ -164,6 +169,8 @@ class VaultIndex:
             return
         payload = {
             "embedding_provider": self.embedding_provider,
+            "embedding_model": self.embedding_model,
+            "embedding_dim": self.embedding_client.dim,
             "files": self._file_meta,
             "chunks_by_file": self._chunks_by_file,
         }
@@ -253,7 +260,7 @@ class VaultIndex:
 
         if pending_dicts:
             texts = [d["text"] for d in pending_dicts]
-            vectors = self.embedding_client.embed(texts)
+            vectors = self.embedding_client.embed(texts, task="document")
             for d, vec in zip(pending_dicts, vectors):
                 d["embedding"] = vec
                 d["_needs_embedding"] = False
@@ -305,7 +312,7 @@ class VaultIndex:
     def vector_scores(self, query: str) -> list[float]:
         self._ensure_built()
         assert self._vector_store is not None
-        query_vec = self.embedding_client.embed([query])[0]
+        query_vec = self.embedding_client.embed([query], task="query")[0]
         return self._vector_store.score(query_vec)
 
     def search(
@@ -335,7 +342,7 @@ class VaultIndex:
         evidences: list[Evidence] = []
         for pos, chunk_idx in enumerate(candidate_idx):
             combined = bm25_weight * norm_bm25[pos] + vector_weight * norm_vector[pos]
-            if bm25_candidates[pos] <= 0.0:
+            if self.embedding_provider == "hash" and bm25_candidates[pos] <= 0.0:
                 # 키워드 겹침이 원점수 기준 전혀 없는 청크는 벡터 항만으로
                 # "근거"로 인정하지 않는다. 지금 쓰는 벡터 임베딩은 실제
                 # 의미(semantic) 임베딩이 아니라 토큰 해시 스텁(hash_stub.py)
@@ -344,7 +351,7 @@ class VaultIndex:
                 # 무관한 볼트 내용을 근거인 것처럼 답해버린다("답을 지어내지
                 # 않는다" 원칙 위반, self_assessment.py의 신뢰도 판정을
                 # 무력화하는 원인이었다). 실제 의미 임베딩으로 교체되면 이
-                # 규칙은 재검토가 필요하다.
+                # 규칙은 실제 Gemini 임베딩에는 적용하지 않는다.
                 combined = 0.0
             evidences.append(
                 Evidence(

@@ -7,8 +7,9 @@
     → 질문 분류 + 근거 충분성 자기평가 → 불충분 시 fallback 트리거 판정
     (영상 재조회 자체는 스텁)
 
-API 키 없이 끝까지 동작하는 것이 1단계 목표이므로 기본 provider는 모두
-오프라인 스텁(임베딩=해시, 답변생성=템플릿, 질문분류=키워드)이다.
+검색 임베딩 기본값은 Gemini Embedding 2이며, 답변 생성과 영상 재조회는
+API 키가 없으면 오프라인 구현으로 폴백한다. 완전한 오프라인 검색 검증은
+`embedding_provider="hash"`를 명시한다.
 
 `database_url`을 지정했는데 PostgreSQL 연결 자체가 실패하면
 (`psycopg.OperationalError`) `ingest/pipeline.py`와 동일한 원칙으로

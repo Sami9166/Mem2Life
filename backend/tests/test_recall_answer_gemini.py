@@ -316,6 +316,7 @@ def test_pipeline_triggers_fallback_when_model_says_not_enough(mock_vault_dir: P
     pipeline = RecallPipeline(
         mock_vault_dir,
         cache_path=tmp_path / "cache.json",
+        embedding_provider="hash",
         answer_generator=GeminiAnswerGenerator(
             client=_FakeClient(text="[근거부족] 전사록에 책 제목이 없습니다."),
             env={},
@@ -336,6 +337,7 @@ def test_pipeline_uses_model_answer_when_grounded(mock_vault_dir: Path, tmp_path
     pipeline = RecallPipeline(
         mock_vault_dir,
         cache_path=tmp_path / "cache.json",
+        embedding_provider="hash",
         answer_generator=GeminiAnswerGenerator(
             client=_FakeClient(text="[답변] 금요일까지 발표자료 초안을 보내달라고 했어요."),
             env={},

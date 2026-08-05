@@ -11,7 +11,7 @@ from recall.pipeline import RecallPipeline
 
 @pytest.fixture
 def client(mock_vault_dir: Path, tmp_path: Path) -> TestClient:
-    pipeline = RecallPipeline(mock_vault_dir, cache_path=tmp_path / "cache.json")
+    pipeline = RecallPipeline(mock_vault_dir, cache_path=tmp_path / "cache.json", embedding_provider="hash")
     app = create_app(pipeline)
     return TestClient(app)
 

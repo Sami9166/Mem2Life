@@ -1,8 +1,9 @@
 """`uv run mem2life-ingest <영상경로>` 로 실행하는 기록 파이프라인 CLI.
 
 영상 파일 하나만 넘기면 오디오 추출 → STT(RTZR, 인증 정보 없으면 자동 스텁
-폴백) → Obsidian 세션 md 생성까지 API 키 없이도 끝까지 실행된다. 인증 정보가
-있어도 API 호출 자체가 실패하면(네트워크 문제, RTZR 서버 오류 등)
+폴백) → Obsidian 세션 md 생성까지 API 키 없이도 끝까지 실행된다. PostgreSQL
+검색 색인까지 만들 때는 Gemini API 키가 필요하다(`--embedding hash` 예외).
+인증 정보가 있어도 STT 호출 자체가 실패하면(네트워크 문제, RTZR 서버 오류 등)
 `ingest/pipeline.py`가 같은 스텁으로 대체해 세션 md 생성까지는 항상
 완료되도록 한다(경고 메시지 출력).
 """
@@ -16,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from recall.index.embeddings.factory import DEFAULT_PROVIDER as DEFAULT_EMBEDDING_PROVIDER
 
 from .pipeline import run_ingest_pipeline
 from .stt.factory import DEFAULT_PROVIDER, available_providers
@@ -88,6 +91,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("MEM2LIFE_DATABASE_URL"),
         help="PostgreSQL DSN. 생략하면 기존 파일 모드로 실행한다.",
     )
+    parser.add_argument(
+        "--embedding",
+        dest="embedding_provider",
+        default=DEFAULT_EMBEDDING_PROVIDER,
+        choices=("gemini", "hash"),
+        help=f"DB 검색 임베딩 provider (기본값: {DEFAULT_EMBEDDING_PROVIDER})",
+    )
     return parser
 
 
@@ -112,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             stt_provider=args.stt_provider,
             keep_audio=not args.delete_audio,
             database_url=args.database_url,
+            embedding_provider=args.embedding_provider,
         )
     except (OSError, ValueError, RuntimeError) as exc:
         # OSError는 FileNotFoundError(입력 영상 없음)뿐 아니라 PermissionError,

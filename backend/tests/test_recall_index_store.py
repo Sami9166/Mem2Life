@@ -57,7 +57,7 @@ def _write_vault(root: Path) -> None:
 
 def test_initial_refresh_reembeds_all_new_files(tmp_path: Path) -> None:
     _write_vault(tmp_path)
-    index = VaultIndex(tmp_path)
+    index = VaultIndex(tmp_path, embedding_provider="hash")
     stats = index.refresh()
     assert set(stats.changed_files) == {
         "sessions/2026-07-17_1500_여행.md",
@@ -70,7 +70,7 @@ def test_initial_refresh_reembeds_all_new_files(tmp_path: Path) -> None:
 
 def test_second_refresh_without_changes_reuses_everything(tmp_path: Path) -> None:
     _write_vault(tmp_path)
-    index = VaultIndex(tmp_path)
+    index = VaultIndex(tmp_path, embedding_provider="hash")
     index.refresh()
 
     stats = index.refresh()
@@ -83,7 +83,7 @@ def test_second_refresh_without_changes_reuses_everything(tmp_path: Path) -> Non
 
 def test_modifying_one_file_only_reembeds_that_file(tmp_path: Path) -> None:
     _write_vault(tmp_path)
-    index = VaultIndex(tmp_path)
+    index = VaultIndex(tmp_path, embedding_provider="hash")
     index.refresh()
 
     # mtime 해상도(파일시스템에 따라 1초 단위일 수 있음) 문제를 피하기 위해
@@ -104,7 +104,7 @@ def test_modifying_one_file_only_reembeds_that_file(tmp_path: Path) -> None:
 
 def test_removed_file_drops_its_chunks(tmp_path: Path) -> None:
     _write_vault(tmp_path)
-    index = VaultIndex(tmp_path)
+    index = VaultIndex(tmp_path, embedding_provider="hash")
     index.refresh()
     before = len(index.chunks)
 
@@ -120,13 +120,13 @@ def test_cache_persists_across_process_restarts(tmp_path: Path) -> None:
     cache_path = tmp_path / "cache.json"
     _write_vault(tmp_path)
 
-    first = build_index(tmp_path, cache_path=cache_path)
+    first = build_index(tmp_path, cache_path=cache_path, embedding_provider="hash")
     total_chunks = len(first.chunks)
     assert cache_path.exists()
 
     # 새 VaultIndex 인스턴스(=프로세스 재시작 시뮬레이션)가 캐시를 읽어
     # 아무것도 바뀌지 않았다면 임베딩을 다시 계산하지 않아야 한다.
-    second = VaultIndex(tmp_path, cache_path=cache_path)
+    second = VaultIndex(tmp_path, cache_path=cache_path, embedding_provider="hash")
     stats = second.refresh()
     assert stats.reembedded_chunks == 0
     assert stats.total_chunks == total_chunks
@@ -134,7 +134,7 @@ def test_cache_persists_across_process_restarts(tmp_path: Path) -> None:
 
 def test_search_indices_filter_restricts_candidates(tmp_path: Path) -> None:
     _write_vault(tmp_path)
-    index = build_index(tmp_path)
+    index = build_index(tmp_path, embedding_provider="hash")
     from recall.vault.types import ChunkLevel
 
     transcript_idx = index.indices_for(levels={ChunkLevel.TRANSCRIPT})
@@ -145,7 +145,7 @@ def test_search_indices_filter_restricts_candidates(tmp_path: Path) -> None:
 
 def test_refresh_on_empty_vault_dir_does_not_raise(tmp_path: Path) -> None:
     (tmp_path / "sessions").mkdir()
-    index = build_index(tmp_path)
+    index = build_index(tmp_path, embedding_provider="hash")
     assert index.chunks == []
     assert index.search("아무 질문") == []
 
@@ -183,7 +183,7 @@ def test_refresh_skips_bad_encoding_file_and_indexes_the_rest(
     bad_path.write_bytes(b"---\ndate: 2026-07-18\n---\n\xff\xfe\x00\x01broken bytes")
 
     with caplog.at_level(logging.WARNING):
-        index = build_index(tmp_path)
+        index = build_index(tmp_path, embedding_provider="hash")
 
     assert index.chunks, "정상 파일들은 계속 인덱싱돼야 한다"
     assert not any(c.doc_path.as_posix() == "sessions/2026-07-18_0900_깨진파일.md" for c in index.chunks)
@@ -199,7 +199,7 @@ def test_refresh_reports_bad_file_in_skipped_files_stat(tmp_path: Path) -> None:
     bad_path = tmp_path / "sessions" / "2026-07-18_0900_깨진파일.md"
     bad_path.write_bytes(b"\xff\xfe\x00\x01broken bytes")
 
-    index = VaultIndex(tmp_path)
+    index = VaultIndex(tmp_path, embedding_provider="hash")
     stats = index.refresh()
 
     assert "sessions/2026-07-18_0900_깨진파일.md" in stats.skipped_files
@@ -216,6 +216,6 @@ def test_refresh_does_not_raise_and_server_can_still_start(tmp_path: Path) -> No
     _write_vault(tmp_path)
     (tmp_path / "sessions" / "2026-07-18_0900_깨진파일.md").write_bytes(b"\xff\xfe\x00\x01broken bytes")
 
-    pipeline = RecallPipeline(tmp_path)  # 예외 없이 생성돼야 한다
+    pipeline = RecallPipeline(tmp_path, embedding_provider="hash")  # 예외 없이 생성돼야 한다
     stats = pipeline.refresh_index()  # 쿼리마다 다시 호출돼도 계속 예외 없이 동작해야 한다
     assert stats.total_chunks > 0

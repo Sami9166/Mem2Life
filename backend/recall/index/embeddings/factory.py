@@ -1,21 +1,21 @@
 """임베딩 provider 선택 팩토리 (`ingest/stt/factory.py`와 동일한 패턴).
 
-지금은 `"hash"`(로컬 스텁) 하나만 등록돼 있다. 실제 서비스용 임베딩
-API(OpenAI `text-embedding-3-*`, Gemini `text-embedding-004` 등)를
-도입할 때는 이 파일의 `_PROVIDERS`에 클래스만 추가하면 되고, 호출부
-(`index/store.py`)는 손댈 필요가 없다.
+실서비스 기본값은 `"gemini"`이고, `"hash"`는 API를 호출하지 않는 테스트용
+provider로 남긴다.
 """
 
 from __future__ import annotations
 
 from .base import EmbeddingClient
+from .gemini import GeminiEmbeddingClient
 from .hash_stub import HashEmbeddingClient
 
 _PROVIDERS: dict[str, type[EmbeddingClient]] = {
+    "gemini": GeminiEmbeddingClient,
     "hash": HashEmbeddingClient,
 }
 
-DEFAULT_PROVIDER = "hash"  # API 키 없이 1단계 프로토타입을 끝까지 돌리기 위한 기본값
+DEFAULT_PROVIDER = "gemini"
 
 
 def get_embedding_client(provider: str = DEFAULT_PROVIDER) -> EmbeddingClient:
