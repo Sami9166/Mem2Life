@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.QuestionAnswer
 import androidx.compose.material.icons.filled.Settings
@@ -79,12 +80,16 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.mem2life.companion.config.BackendConfigStore
 import com.mem2life.companion.net.RecallApiClient
+import com.mem2life.companion.net.WikiApiClient
+import com.mem2life.companion.net.WikiPage
+import com.mem2life.companion.net.WikiPageSummary
 import com.mem2life.companion.query.QueryUiState
 import com.mem2life.companion.query.VoiceQueryController
 import com.mem2life.companion.recording.RecordingForegroundService
 import com.mem2life.companion.recording.RecordingSessionController
 import com.mem2life.companion.recording.RecordingState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Vuzix Blade 2 온글래스 앱의 단일 Activity.
@@ -165,7 +170,7 @@ class MainActivity : ComponentActivity() {
 }
 
 /** 앱 내 화면. 뒤로가기(두 손가락 탭 = KEYCODE_BACK)로 홈으로 돌아온다. */
-private enum class Screen { HOME, RECORD, QUERY, SETTINGS }
+private enum class Screen { HOME, RECORD, QUERY, WIKI, SETTINGS }
 
 // Blade 2 웨이브가이드 팔레트 — 순수 검정 배경 위 밝은 전경, 포커스는 흰색으로 강조.
 private val FgPrimary = Color.White
@@ -233,6 +238,7 @@ private fun Mem2LifeApp(activity: MainActivity) {
                 isRecording = isRecording,
                 onRecord = { screen = Screen.RECORD },
                 onQuery = { screen = Screen.QUERY },
+                onWiki = { screen = Screen.WIKI },
                 onSettings = { screen = Screen.SETTINGS },
             )
         Screen.RECORD -> {
@@ -242,6 +248,10 @@ private fun Mem2LifeApp(activity: MainActivity) {
         Screen.QUERY -> {
             BackHandler { screen = Screen.HOME }
             QueryScreen(backendConfigStore = backendConfigStore)
+        }
+        Screen.WIKI -> {
+            BackHandler { screen = Screen.HOME }
+            WikiScreen(backendConfigStore = backendConfigStore)
         }
         Screen.SETTINGS -> {
             BackHandler { screen = Screen.HOME }
@@ -270,31 +280,32 @@ private fun HomeScreen(
     isRecording: Boolean,
     onRecord: () -> Unit,
     onQuery: () -> Unit,
+    onWiki: () -> Unit,
     onSettings: () -> Unit,
 ) {
     val firstFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) { firstFocus.requestFocus() }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
             "Mem2Life",
             color = FgPrimary,
-            fontSize = 22.sp,
+            fontSize = 20.sp,
             fontWeight = FontWeight.Bold,
         )
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(10.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth().weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             ModeCard(
                 icon = Icons.Filled.Videocam,
                 label = "기록",
-                subtitle = if (isRecording) "● 기록 중" else "보고 들은 것 저장",
+                subtitle = if (isRecording) "● 기록 중" else "저장",
                 accent = isRecording,
                 focusRequester = firstFocus,
                 onClick = onRecord,
@@ -303,15 +314,24 @@ private fun HomeScreen(
             ModeCard(
                 icon = Icons.Filled.QuestionAnswer,
                 label = "질문",
-                subtitle = "기억에게 물어보기",
+                subtitle = "물어보기",
                 accent = false,
                 focusRequester = null,
                 onClick = onQuery,
                 modifier = Modifier.weight(1f).fillMaxSize(),
             )
+            ModeCard(
+                icon = Icons.Filled.MenuBook,
+                label = "위키",
+                subtitle = "기록 열람",
+                accent = false,
+                focusRequester = null,
+                onClick = onWiki,
+                modifier = Modifier.weight(1f).fillMaxSize(),
+            )
         }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
         SettingsChip(onClick = onSettings)
     }
 }
@@ -345,14 +365,14 @@ private fun ModeCard(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(56.dp))
-        Spacer(Modifier.height(8.dp))
-        Text(label, color = if (focused) FgPrimary else FgDim, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(44.dp))
+        Spacer(Modifier.height(6.dp))
+        Text(label, color = if (focused) FgPrimary else FgDim, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(2.dp))
         Text(
             subtitle,
             color = if (accent) RecRed else FgFaint,
-            fontSize = 12.sp,
+            fontSize = 11.sp,
             textAlign = TextAlign.Center,
         )
     }
@@ -559,6 +579,147 @@ private fun EvidenceView(
         }
     }
 }
+
+/**
+ * 위키 모드 — 볼트(옵시디언 세션/인물/주제) 페이지를 브라우징한다(옵션 B).
+ *
+ * recall 서버의 `/wiki/pages`(목록) → `/wiki/page`(본문)를 읽어 글래스에 띄운다.
+ * 목록에서 D-pad로 페이지를 고르면 본문을 열고, 뒤로가기로 목록→홈 순으로 나간다.
+ */
+@Composable
+private fun WikiScreen(backendConfigStore: BackendConfigStore) {
+    val scope = rememberCoroutineScope()
+    val client = remember { WikiApiClient { backendConfigStore.load() } }
+
+    var pages by remember { mutableStateOf<List<WikiPageSummary>?>(null) }
+    var listError by remember { mutableStateOf<String?>(null) }
+    var openPage by remember { mutableStateOf<WikiPage?>(null) }
+    var pageError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        client.listPages().fold(
+            onSuccess = { pages = it },
+            onFailure = { listError = it.message ?: "목록을 불러오지 못했습니다." },
+        )
+    }
+
+    // 페이지가 열려 있으면 뒤로가기는 목록으로(홈으로 나가지 않게 가로챈다).
+    BackHandler(enabled = openPage != null) { openPage = null }
+
+    val current = openPage
+    if (current != null) {
+        WikiPageView(page = current, onBack = { openPage = null })
+        return
+    }
+
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Text("위키", color = FgPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        when {
+            listError != null -> Text("불러오기 실패: $listError", color = RecRed, fontSize = 12.sp)
+            pages == null -> Text("불러오는 중…", color = FgDim, fontSize = 13.sp)
+            pages!!.isEmpty() -> Text("아직 기록된 위키 페이지가 없습니다.", color = FgFaint, fontSize = 13.sp)
+            else ->
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    pages!!.forEach { p ->
+                        item {
+                            WikiListRow(
+                                summary = p,
+                                onClick = {
+                                    pageError = null
+                                    scope.launch {
+                                        client.getPage(p.path).fold(
+                                            onSuccess = { openPage = it },
+                                            onFailure = { pageError = it.message ?: "페이지 열기 실패" },
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    }
+                    pageError?.let { item { Text("오류: $it", color = RecRed, fontSize = 11.sp) } }
+                }
+        }
+    }
+}
+
+/** 위키 목록 행 — 제목 + 종류·날짜. 포커스되면 강조. */
+@Composable
+private fun WikiListRow(summary: WikiPageSummary, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(if (focused) FocusFill else Color.Black)
+                .border(BorderStroke(if (focused) 2.dp else 1.dp, if (focused) FocusBorder else IdleBorder), RoundedCornerShape(10.dp))
+                .onFocusChanged { focused = it.isFocused }
+                .clickable(onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Text(summary.title, color = if (focused) FgPrimary else FgDim, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        Text(
+            listOfNotNull(kindLabel(summary.kind), summary.date).joinToString(" · "),
+            color = FgFaint,
+            fontSize = 10.sp,
+        )
+    }
+}
+
+/** 위키 페이지 본문 — 마크다운을 큰 글씨로 스크롤 표시(글래스용, 단순 렌더). */
+@Composable
+private fun WikiPageView(page: WikiPage, onBack: () -> Unit) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        item {
+            Text(page.title, color = FgPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Text(
+                listOfNotNull(kindLabel(page.kind), page.date).joinToString(" · "),
+                color = FgFaint,
+                fontSize = 10.sp,
+            )
+            HorizontalDivider(color = IdleBorder, modifier = Modifier.padding(vertical = 6.dp))
+        }
+        page.body.lines().forEach { line ->
+            if (line.isNotBlank()) {
+                item {
+                    Text(
+                        cleanMarkdownLine(line),
+                        color = lineColor(line),
+                        fontSize = lineSize(line),
+                        fontWeight = if (line.trimStart().startsWith("#")) FontWeight.Bold else FontWeight.Normal,
+                        lineHeight = 18.sp,
+                    )
+                }
+            }
+        }
+        item {
+            Spacer(Modifier.height(8.dp))
+            BigActionButton(text = "목록으로", accent = false, onClick = onBack)
+        }
+    }
+}
+
+private fun kindLabel(kind: String): String =
+    when (kind) {
+        "session" -> "세션"
+        "people" -> "인물"
+        "topic", "topics" -> "주제"
+        "daily" -> "하루"
+        else -> kind
+    }
+
+/** 마크다운 헤더(##)는 강조색·큰 글씨로 아주 단순하게 구분한다. */
+private fun lineColor(line: String): Color = if (line.trimStart().startsWith("#")) FgPrimary else FgDim
+
+private fun lineSize(line: String) = if (line.trimStart().startsWith("#")) 15.sp else 13.sp
+
+/** 글래스 가독성을 위해 마크다운 마커(#, -, *)만 앞에서 벗긴다(간단 렌더). */
+private fun cleanMarkdownLine(line: String): String =
+    line.trimStart().trimStart('#', '-', '*', ' ').ifEmpty { line.trim() }
 
 /** 녹화 중 컨트롤을 띄운 뒤 이만큼 입력이 없으면 다시 감춘다. */
 private const val CONTROLS_AUTO_HIDE_MS = 5_000L
