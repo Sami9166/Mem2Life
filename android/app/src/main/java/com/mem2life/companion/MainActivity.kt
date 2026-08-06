@@ -23,7 +23,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -89,6 +93,7 @@ import com.mem2life.companion.query.VoiceQueryController
 import com.mem2life.companion.recording.RecordingForegroundService
 import com.mem2life.companion.recording.RecordingSessionController
 import com.mem2life.companion.recording.RecordingState
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -190,6 +195,39 @@ private val RecRed = Color(0xFFFF4A4A)
  * 위/아래 키는 필드가 삼키고, 뒤로가기는 IME만 닫을 뿐 포커스는 필드에 남는다).
  * 터치스크린이 없어 화면을 직접 누를 수도 없으므로 앱 재시작 외에는 탈출구가 없었다.
  */
+/** D-pad 한 번에 스크롤할 픽셀 양(글래스 터치패드 스와이프 = D-pad 이벤트). */
+private const val DPAD_SCROLL_STEP_PX = 260f
+
+/**
+ * 포커스 불가한 긴 본문(위키 페이지 등)을 D-pad로 스크롤한다.
+ *
+ * Blade 2 터치패드 스와이프는 D-pad 이벤트로 들어오는데, 본문 Text는 포커스 대상이
+ * 아니라 포커스 이동으로는 스크롤이 안 된다(아래 내용이 안 보임). 그래서 상/하 키를
+ * 가로채 [listState]를 직접 스크롤한다. **더 스크롤할 게 없을 때만 소비하지 않고
+ * 흘려보내** — 그래야 끝에 다다르면 포커스가 하단의 연결 칩/버튼으로 넘어간다.
+ */
+private fun Modifier.dpadScroll(listState: LazyListState, scope: CoroutineScope): Modifier =
+    onPreviewKeyEvent { event ->
+        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        when (event.key) {
+            Key.DirectionDown ->
+                if (listState.canScrollForward) {
+                    scope.launch { listState.animateScrollBy(DPAD_SCROLL_STEP_PX) }
+                    true
+                } else {
+                    false
+                }
+            Key.DirectionUp ->
+                if (listState.canScrollBackward) {
+                    scope.launch { listState.animateScrollBy(-DPAD_SCROLL_STEP_PX) }
+                    true
+                } else {
+                    false
+                }
+            else -> false
+        }
+    }
+
 private fun Modifier.dpadFocusEscape(focusManager: FocusManager): Modifier =
     onPreviewKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
@@ -709,8 +747,20 @@ private fun WikiListRow(summary: WikiPageSummary, onClick: () -> Unit) {
  */
 @Composable
 private fun WikiPageView(page: WikiPage, navError: String?, onOpenEntity: (String) -> Unit, onBack: () -> Unit) {
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val scrollFocus = remember { FocusRequester() }
+    // 진입 시 스크롤 컨테이너에 포커스를 줘야 D-pad(스와이프) 스크롤이 먹는다.
+    LaunchedEffect(page) { scrollFocus.requestFocus() }
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        state = listState,
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .focusRequester(scrollFocus)
+                .dpadScroll(listState, scope)
+                .focusable(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         item {
@@ -763,8 +813,19 @@ private fun WikiEntityView(
     onOpenEntity: (String) -> Unit,
     onBack: () -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val scrollFocus = remember { FocusRequester() }
+    LaunchedEffect(entity) { scrollFocus.requestFocus() }
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        state = listState,
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .focusRequester(scrollFocus)
+                .dpadScroll(listState, scope)
+                .focusable(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         item {
