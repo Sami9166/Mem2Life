@@ -42,6 +42,7 @@ from dotenv import load_dotenv
 
 from ingest.pipeline import resolve_captions, resolve_summary
 from ingest.stt.factory import DEFAULT_PROVIDER, get_stt_client
+from ingest.stt.speaker_merge import get_speaker_merger
 from ingest.visual import VideoOpenError, VisualProcessingResult, process_video
 from ingest.wiki.session_md import session_filename, write_session_md
 
@@ -96,6 +97,11 @@ def main() -> int:
     parser.add_argument("--title", default=None, help="세션 제목 (생략 시 세션ID)")
     parser.add_argument("--stt", default=DEFAULT_PROVIDER, help=f"STT provider (기본값: {DEFAULT_PROVIDER})")
     parser.add_argument(
+        "--no-speaker-merge",
+        action="store_true",
+        help="LLM 화자 병합 후처리를 끈다(음향 화자분리 결과를 그대로 쓴다).",
+    )
+    parser.add_argument(
         "--no-captions",
         action="store_true",
         help="키프레임 추출·VLM 장면 캡션을 건너뛴다 (전사록만 필요할 때 / Gemini 호출 수 절약).",
@@ -141,6 +147,16 @@ def main() -> int:
         f"      → provider={transcript.provider}, 발화 {len(transcript.segments)}개, "
         f"화자 {transcript.speakers}"
     )
+
+    # 2b. LLM 화자 병합 후처리(내용 기반) — 음향 화자분리의 과분할을 교정한다.
+    #     키 없으면 NoOp(무변경), 호출 실패해도 원본 유지(안전).
+    if not args.no_speaker_merge:
+        merger = get_speaker_merger()
+        before = list(transcript.speakers)
+        transcript = merger.merge(transcript)
+        after = list(transcript.speakers)
+        if before != after:
+            print(f"      → 화자 병합({type(merger).__name__}): {before} → {after}")
 
     # 3. 청크 concat (fallback 원본 영상)
     merged = _concat_chunks(session_dir, session_dir / "session_video.mp4")
