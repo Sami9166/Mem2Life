@@ -112,6 +112,7 @@ class RTZRClient:
         upload_timeout_sec: float = DEFAULT_UPLOAD_TIMEOUT_SEC,
         sleep_fn: Callable[[float], None] = time.sleep,
         time_fn: Callable[[], float] = time.monotonic,
+        spk_count: int | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
         """
@@ -148,6 +149,15 @@ class RTZRClient:
         self._upload_timeout_sec = upload_timeout_sec
         self._sleep_fn = sleep_fn
         self._time_fn = time_fn
+        # 화자 수. 0 = 자동 추정(불안정, 과분할 경향). 아는 경우 명시하면 안정된다.
+        # 명시 인자 > RTZR_SPK_COUNT 환경변수 > 0(자동).
+        if spk_count is not None:
+            self._spk_count = spk_count
+        else:
+            try:
+                self._spk_count = int(source_env.get("RTZR_SPK_COUNT", "0") or "0")
+            except ValueError:
+                self._spk_count = 0
 
     def close(self) -> None:
         if self._owns_http:
@@ -215,7 +225,7 @@ class RTZRClient:
             "model_name": DEFAULT_MODEL_NAME,
             "language": DEFAULT_LANGUAGE,
             "use_diarization": True,
-            "diarization": {"spk_count": 0},  # 0 = 화자 수 자동 추정
+            "diarization": {"spk_count": self._spk_count},  # 0 = 자동 추정, N = N명으로 고정
             "domain": DEFAULT_DOMAIN,
         }
         try:

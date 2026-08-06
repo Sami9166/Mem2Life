@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import wave
@@ -150,13 +151,18 @@ def main() -> int:
 
     # 2b. LLM 화자 병합 후처리(내용 기반) — 음향 화자분리의 과분할을 교정한다.
     #     키 없으면 NoOp(무변경), 호출 실패해도 원본 유지(안전).
-    if not args.no_speaker_merge:
+    #     끄는 방법 2가지: --no-speaker-merge 플래그(수동 실행) 또는 .env의
+    #     SPEAKER_MERGE=off(자동 파이프라인 포함 전역). 기본은 켜짐.
+    env_merge_off = os.environ.get("SPEAKER_MERGE", "on").strip().lower() in ("off", "0", "false", "no")
+    if not args.no_speaker_merge and not env_merge_off:
         merger = get_speaker_merger()
         before = list(transcript.speakers)
         transcript = merger.merge(transcript)
         after = list(transcript.speakers)
         if before != after:
             print(f"      → 화자 병합({type(merger).__name__}): {before} → {after}")
+    else:
+        print("      → 화자 병합 건너뜀(--no-speaker-merge 또는 SPEAKER_MERGE=off)")
 
     # 3. 청크 concat (fallback 원본 영상)
     merged = _concat_chunks(session_dir, session_dir / "session_video.mp4")
