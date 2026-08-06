@@ -59,7 +59,10 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -97,6 +100,18 @@ _TEMPERATURE = 0.3  # 사실 기반 서술이 목적이라 창작적 다양성�
 # (finish_reason=STOP) 확인됨.
 _MAX_OUTPUT_TOKENS_CAPTION = 2048
 _MAX_OUTPUT_TOKENS_SUMMARY = 4096
+
+# 배치 캡션: 60초 창 안의 키프레임을 한 번의 호출로 캡션한다(API 호출 수 절감,
+# 429 완화). 한 호출에 담는 프레임 상한은 응답 길이(MAX_TOKENS)와 이미지 입력
+# 토큰을 감안해 보수적으로 잡는다. 배치 출력 토큰은 프레임 수에 비례해 늘린다.
+_CAPTION_BATCH_WINDOW_SEC = 60.0
+_CAPTION_BATCH_MAX_FRAMES = 8
+_MAX_OUTPUT_TOKENS_CAPTION_BATCH_BASE = 1024
+_MAX_OUTPUT_TOKENS_CAPTION_BATCH_PER_FRAME = 512
+
+
+class _BatchCaptionFormatError(RuntimeError):
+    """배치 캡션 응답이 JSON 배열이 아니거나 프레임 수와 개수가 안 맞을 때."""
 
 
 class GeminiCredentialError(RuntimeError):
@@ -181,6 +196,44 @@ def _generate_text(
     return text.strip()
 
 
+def _batch_by_window(
+    keyframes: Sequence[ProcessedKeyframe], window_sec: float, max_frames: int
+) -> list[list[ProcessedKeyframe]]:
+    """시간 순 키프레임을 배치로 묶는다: 각 배치는 시간 폭 ≤ window_sec, 개수 ≤ max_frames."""
+    batches: list[list[ProcessedKeyframe]] = []
+    current: list[ProcessedKeyframe] = []
+    for keyframe in keyframes:
+        spans_over_window = bool(current) and (
+            keyframe.timestamp_sec - current[0].timestamp_sec > window_sec
+        )
+        if current and (len(current) >= max_frames or spans_over_window):
+            batches.append(current)
+            current = []
+        current.append(keyframe)
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _parse_caption_array(raw: str, *, expected: int) -> list[str]:
+    """배치 응답(JSON 문자열 배열)을 파싱·검증한다. 형식이 어긋나면 예외를 던진다."""
+    fenced = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
+    match = re.search(r"\[.*\]", fenced, flags=re.DOTALL)
+    if not match:
+        raise _BatchCaptionFormatError("응답에서 JSON 배열을 찾지 못했습니다.")
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError as exc:
+        raise _BatchCaptionFormatError(f"JSON 배열 파싱 실패: {exc}") from exc
+    if not isinstance(parsed, list) or len(parsed) != expected:
+        actual = len(parsed) if isinstance(parsed, list) else "비배열"
+        raise _BatchCaptionFormatError(f"캡션 개수 불일치(기대 {expected}, 실제 {actual})")
+    captions = [str(item).strip() for item in parsed]
+    if any(not caption for caption in captions):
+        raise _BatchCaptionFormatError("빈 캡션이 포함되어 있습니다.")
+    return captions
+
+
 class GeminiVLMCaptioner:
     """`VLMCaptioner` Protocol(`base.py`)을 만족하는 실제 Gemini 구현체."""
 
@@ -213,9 +266,56 @@ class GeminiVLMCaptioner:
         *,
         media_slug: str,
     ) -> list[CaptionItem]:
+        """60초 창 단위로 키프레임을 묶어 한 번의 호출로 캡션한다(프레임별 N회 → 창당 1회).
+
+        배치 응답 형식이 어긋나면(JSON 아님/개수 불일치) 그 배치만 프레임별 개별
+        호출로 폴백한다 — 형식 오류로 한 세션의 캡션을 통째로 잃지 않게. API 오류
+        (429/5xx/네트워크/MAX_TOKENS)는 그대로 위로 전파돼 pipeline이 플레이스홀더로
+        대체한다(프레임별로 재시도해도 같은 오류라 폴백 의미 없음).
+        """
         del media_slug  # Protocol 시그니처 유지용 — 실제 캡션 텍스트에는 이미지 경로를 넣지 않는다.
         results: list[CaptionItem] = []
-        for keyframe in keyframes:
+        for batch in _batch_by_window(keyframes, _CAPTION_BATCH_WINDOW_SEC, _CAPTION_BATCH_MAX_FRAMES):
+            if len(batch) == 1:
+                results.extend(self._caption_each(batch, transcript))
+                continue
+            try:
+                results.extend(self._caption_batch(batch, transcript))
+            except _BatchCaptionFormatError as exc:
+                print(
+                    f"[경고] 배치 캡션 응답 형식 오류({exc}) — 이 배치는 프레임별로 폴백합니다.",
+                    file=sys.stderr,
+                )
+                results.extend(self._caption_each(batch, transcript))
+        return results
+
+    def _caption_batch(
+        self, batch: Sequence[ProcessedKeyframe], transcript: Transcript
+    ) -> list[CaptionItem]:
+        timestamps = [kf.timestamp_sec for kf in batch]
+        context = prompts.build_batch_caption_context(transcript, timestamps[0], timestamps[-1])
+        contents: list[Any] = [
+            genai_types.Part.from_bytes(data=Path(kf.image_path).read_bytes(), mime_type="image/jpeg")
+            for kf in batch
+        ]
+        contents.append(prompts.build_batch_caption_prompt(context, timestamps))
+        raw = _generate_text(
+            self._client,
+            model=self._model,
+            contents=contents,
+            system_instruction=prompts.CAPTION_SYSTEM_INSTRUCTION,
+            max_output_tokens=_MAX_OUTPUT_TOKENS_CAPTION_BATCH_BASE
+            + _MAX_OUTPUT_TOKENS_CAPTION_BATCH_PER_FRAME * len(batch),
+        )
+        captions = _parse_caption_array(raw, expected=len(batch))
+        return [(kf.timestamp_sec, kf.timestamp_sec, cap) for kf, cap in zip(batch, captions, strict=True)]
+
+    def _caption_each(
+        self, batch: Sequence[ProcessedKeyframe], transcript: Transcript
+    ) -> list[CaptionItem]:
+        """프레임별 개별 호출(폴백/단일 프레임 경로)."""
+        results: list[CaptionItem] = []
+        for keyframe in batch:
             context = prompts.build_caption_context(transcript, keyframe.timestamp_sec)
             image_bytes = Path(keyframe.image_path).read_bytes()
             contents: list[Any] = [

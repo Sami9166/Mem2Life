@@ -24,6 +24,17 @@ from ingest.stt.rtzr_client import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_spk_count_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """os.environ의 RTZR_SPK_COUNT를 제거해 테스트를 격리한다.
+
+    live 테스트 등이 load_dotenv로 사용자 .env(예: RTZR_SPK_COUNT=2)를
+    os.environ에 올리면, env를 명시하지 않은 이 파일의 테스트가 그 값을 읽어
+    "기본 spk_count=0" 가정이 깨진다. 각 테스트 전 이 키를 지워 결정성을 보장한다.
+    """
+    monkeypatch.delenv("RTZR_SPK_COUNT", raising=False)
+
+
 def _make_client(
     handler: Callable[[httpx.Request], httpx.Response],
     **kwargs: object,
