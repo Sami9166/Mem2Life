@@ -228,7 +228,7 @@ class _GroundedFake:
 
 
 def test_pipeline_promotes_grounded_requery_to_final_text(mock_vault_dir: Path) -> None:
-    pipeline = RecallPipeline(mock_vault_dir, video_requery_client=_GroundedFake())
+    pipeline = RecallPipeline(mock_vault_dir, embedding_provider="hash", video_requery_client=_GroundedFake())
     result = pipeline.answer_question(
         "어제 민수가 보여준 책 제목이 뭐였지?", reference_date=date(2026, 7, 18)
     )
@@ -242,7 +242,7 @@ def test_pipeline_promotes_grounded_requery_to_final_text(mock_vault_dir: Path) 
 def test_pipeline_uses_honest_failure_when_requery_not_grounded(mock_vault_dir: Path) -> None:
     # 기본(주입 없음) → factory가 키 없어 스텁을 고르고, 스텁은 미근거이므로
     # 최종 답변은 "기록에 없음"류가 되어야 한다(지어내지 않음).
-    pipeline = RecallPipeline(mock_vault_dir)
+    pipeline = RecallPipeline(mock_vault_dir, embedding_provider="hash")
     result = pipeline.answer_question(
         "어제 민수가 보여준 책 제목이 뭐였지?", reference_date=date(2026, 7, 18)
     )

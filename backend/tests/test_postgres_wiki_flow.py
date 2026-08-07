@@ -85,6 +85,7 @@ def test_ingest_db_flow_reads_db_before_markdown_and_indexes_it(
         title="DB 세션",
         session_start=datetime(2026, 7, 22, 14, 0),
         database_url="postgresql://test",
+        embedding_provider="hash",
         summary="민수와 제주도 여행 계획을 논의했다.",
         highlights=[(1.0, 2.0, "제주도 여행 출발일을 확정했다.")],
         captions=[(2.0, 5.0, "제주도 여행 책자가 보인다.")],
@@ -192,6 +193,7 @@ def test_recall_pipeline_falls_back_to_file_index_when_postgres_unreachable(
     pipeline = RecallPipeline(
         mock_vault_dir,
         cache_path=tmp_path / "cache.json",
+        embedding_provider="hash",
         database_url=_UNREACHABLE_DATABASE_URL,
     )
 
@@ -217,6 +219,7 @@ def test_recall_pipeline_health_endpoint_reports_fallback_when_postgres_unreacha
     pipeline = RecallPipeline(
         mock_vault_dir,
         cache_path=tmp_path / "cache.json",
+        embedding_provider="hash",
         database_url=_UNREACHABLE_DATABASE_URL,
     )
     client = TestClient(create_app(pipeline))
@@ -262,7 +265,7 @@ video: "video.mp4"
     )
     database = _MemoryWikiDatabase("postgresql://test")
 
-    count = index_markdown_file(database, vault, path, session_id="session-1")
+    count = index_markdown_file(database, vault, path, session_id="session-1", embedding_provider="hash")
 
     assert count == 4
     assert database.document is not None
@@ -333,6 +336,7 @@ def test_real_postgres_ingest_markdown_index_and_search(
         title="PostgreSQL smoke",
         session_start=datetime(2026, 7, 22, 14, 0),
         database_url=database_url,
+        embedding_provider="hash",
         summary="Min plans a Seogwipo lodging trip.",
         highlights=[(1.0, 2.0, "Min confirms the Seogwipo lodging plan.")],
         captions=[(2.0, 5.0, "A Seogwipo travel guide is visible.")],
@@ -373,7 +377,7 @@ def test_real_postgres_ingest_markdown_index_and_search(
         assert document[1] >= 4
         assert document[2] == VECTOR_DIM
 
-        index = PostgresIndex(database_url, vault)
+        index = PostgresIndex(database_url, vault, embedding_provider="hash")
         index.refresh()
         evidence = index.search("Seogwipo lodging", top_k=3)
         assert evidence

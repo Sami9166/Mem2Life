@@ -37,7 +37,7 @@ def index_markdown_file(
     document = load_document(markdown_path, vault_dir)
     chunks = chunk_document(document)
     client = embedding_client or get_embedding_client(embedding_provider)
-    embeddings = client.embed([chunk.text for chunk in chunks]) if chunks else []
+    embeddings = client.embed([chunk.text for chunk in chunks], task="document") if chunks else []
 
     items: list[SearchItem] = []
     for chunk, embedding in zip(chunks, embeddings, strict=True):
@@ -49,7 +49,7 @@ def index_markdown_file(
                 content=chunk.text,
                 metadata=metadata,
                 embedding=embedding,
-                embedding_model=embedding_provider,
+                embedding_model=getattr(client, "model", embedding_provider),
                 content_hash=hashlib.sha256(chunk.text.encode("utf-8")).hexdigest(),
             )
         )
@@ -90,7 +90,7 @@ class PostgresIndex(VaultIndex):
 
     def refresh(self) -> RefreshStats:
         """DB에 이미 색인된 Markdown 항목을 BM25 메모리 인덱스와 맞춘다."""
-        rows = self.database.load_search_items(str(self.vault_dir))
+        rows = self.database.load_search_items(str(self.vault_dir), self.embedding_model)
         chunks = []
         item_ids = []
         for item_id, _content, metadata in rows:
@@ -120,7 +120,7 @@ class PostgresIndex(VaultIndex):
         self._ensure_built()
         if not self._item_ids:
             return []
-        query_vector = self.embedding_client.embed([query])[0]
+        query_vector = self.embedding_client.embed([query], task="query")[0]
         scores = self.database.vector_scores(str(self.vault_dir), self._item_ids, query_vector)
         return [scores.get(item_id, 0.0) for item_id in self._item_ids]
 

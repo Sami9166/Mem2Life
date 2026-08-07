@@ -37,6 +37,7 @@ def pipeline(mock_vault_dir: Path, tmp_path_factory: pytest.TempPathFactory) -> 
     return RecallPipeline(
         mock_vault_dir,
         cache_path=cache_path,
+        embedding_provider="hash",
         answer_generator=TemplateAnswerGenerator(),
         video_requery_client=StubVideoRequeryClient(),
     )

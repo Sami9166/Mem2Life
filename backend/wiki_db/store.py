@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-VECTOR_DIM = 256  # 현재 기본 hash-stub 임베딩 차원과 일치한다.
+VECTOR_DIM = 768  # Gemini Embedding 2의 명시적 output_dimensionality와 일치한다.
 
 SCHEMA_SQL = f"""
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -75,6 +75,25 @@ CREATE TABLE IF NOT EXISTS search_items (
     indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (document_id, chunk_id)
 );
+
+DO $$
+DECLARE
+    current_dim INTEGER;
+BEGIN
+    SELECT atttypmod INTO current_dim
+    FROM pg_attribute
+    WHERE attrelid = 'search_items'::regclass
+      AND attname = 'embedding'
+      AND NOT attisdropped;
+
+    IF current_dim IS NOT NULL AND current_dim <> {VECTOR_DIM} THEN
+        -- search_items는 Markdown에서 다시 만드는 파생 색인이므로 구형 벡터만 제거한다.
+        DELETE FROM search_items;
+        ALTER TABLE search_items
+            ALTER COLUMN embedding TYPE vector({VECTOR_DIM})
+            USING embedding::vector({VECTOR_DIM});
+    END IF;
+END $$;
 
 DO $$
 BEGIN
@@ -357,7 +376,9 @@ class WikiDatabase:
                         ],
                     )
 
-    def load_search_items(self, vault_path: str) -> list[tuple[int, str, dict[str, object]]]:
+    def load_search_items(
+        self, vault_path: str, embedding_model: str
+    ) -> list[tuple[int, str, dict[str, object]]]:
         """볼트 하나의 검색 항목을 DB 행 순서대로 읽는다."""
         with self._connect() as connection:
             rows = connection.execute(
@@ -365,10 +386,10 @@ class WikiDatabase:
                 SELECT si.id, si.content, si.metadata
                 FROM search_items AS si
                 JOIN wiki_documents AS wd ON wd.id = si.document_id
-                WHERE wd.vault_path = %s
+                WHERE wd.vault_path = %s AND si.embedding_model = %s
                 ORDER BY si.id
                 """,
-                (vault_path,),
+                (vault_path, embedding_model),
             ).fetchall()
         return [(row[0], row[1], row[2]) for row in rows]
 

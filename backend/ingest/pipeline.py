@@ -49,6 +49,7 @@ from uuid import uuid4
 
 import psycopg
 
+from recall.index.embeddings.factory import DEFAULT_PROVIDER as DEFAULT_EMBEDDING_PROVIDER
 from wiki_db import MemoryItem, StoredSession, WikiDatabase
 
 from .audio import ExtractedAudio, extract_audio
@@ -266,6 +267,7 @@ def run_ingest_pipeline(
     extract_keyframes: bool = True,
     caption_provider: str = DEFAULT_CAPTION_PROVIDER,
     summary_provider: str = DEFAULT_SUMMARY_PROVIDER,
+    embedding_provider: str = DEFAULT_EMBEDDING_PROVIDER,
 ) -> IngestResult:
     """영상 파일 → 오디오 추출 → STT 스텁 → 세션 md 생성을 순서대로 실행한다.
 
@@ -300,6 +302,7 @@ def run_ingest_pipeline(
             저장을 건너뛴다(오디오/STT만 실행 — 이 경우 캡션도 자동으로 비게 된다).
         caption_provider: VLM 캡션 provider 이름(기본 "gemini").
         summary_provider: LLM 요약 provider 이름(기본 "gemini").
+        embedding_provider: DB 검색 색인 provider 이름(기본 "gemini").
 
     Returns:
         IngestResult: 생성된 세션 md 경로 등 실행 결과.
@@ -432,7 +435,13 @@ def run_ingest_pipeline(
                 captions=_timed_items(stored_session, "caption"),
             )
             database.set_session_output(session_id, str(session_md_path.resolve()), "processing")
-            index_markdown_file(database, vault_dir, session_md_path, session_id=session_id)
+            index_markdown_file(
+                database,
+                vault_dir,
+                session_md_path,
+                session_id=session_id,
+                embedding_provider=embedding_provider,
+            )
             database.set_session_output(session_id, str(session_md_path.resolve()), "ready")
         except psycopg.OperationalError as exc:
             # PostgreSQL 연결 자체가 안 되는 경우(서버 미기동, 네트워크 문제 등).
