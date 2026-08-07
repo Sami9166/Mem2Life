@@ -12,9 +12,12 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .pipeline import RecallPipeline
+from .wiki_api import create_wiki_router as create_wiki_api_router
+from .wiki_view import create_wiki_router as create_wiki_view_router, wiki_ui_dir
 
 
 class RecallQueryRequest(BaseModel):
@@ -133,6 +136,15 @@ def create_app(pipeline: RecallPipeline) -> FastAPI:
     """단독 실행용 FastAPI 앱 (`cli.py serve`에서 사용)."""
     app = FastAPI(title="Mem2Life Recall API", version="0.1.0")
     app.include_router(create_recall_router(pipeline))
+    # 위키 열람(읽기 전용) — 글래스 앱이 볼트 페이지를 브라우징할 수 있게 한다.
+    app.include_router(create_wiki_api_router(pipeline.vault_dir))
+    app.include_router(
+        create_wiki_view_router(
+            pipeline.vault_dir,
+            database=getattr(pipeline.index, "database", None),
+        )
+    )
+    app.mount("/assets", StaticFiles(directory=wiki_ui_dir()), name="wiki-assets")
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:

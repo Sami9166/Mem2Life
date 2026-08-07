@@ -75,6 +75,39 @@ def build_caption_prompt(context: str) -> str:
     )
 
 
+def build_batch_caption_context(
+    transcript: Transcript, start_sec: float, end_sec: float
+) -> str:
+    """배치 구간 `[start-window, end]`에 걸친 전사록 줄을 모은다(여러 프레임 공통 컨텍스트)."""
+    window_start = start_sec - CAPTION_CONTEXT_WINDOW_SEC
+    lines = [
+        f"{segment.timestamp_label} {segment.speaker}: {segment.text}"
+        for segment in transcript.segments
+        if window_start <= segment.start_sec <= end_sec
+    ]
+    if not lines:
+        return "(직전 전사록 없음)"
+    return "\n".join(lines)
+
+
+def build_batch_caption_prompt(context: str, timestamps: Sequence[float]) -> str:
+    """여러 키프레임을 한 번에 캡션하는 프롬프트 — 이미지 순서대로 JSON 배열을 요청한다."""
+    listing = "\n".join(
+        f"- 이미지 {i}: 세션 {format_timestamp(ts)} 지점" for i, ts in enumerate(timestamps, start=1)
+    )
+    n = len(timestamps)
+    return (
+        "다음은 이 구간의 대화 전사록입니다(참고용 — 그대로 반복하지 마세요):\n"
+        f"{context}\n\n"
+        f"아래에 이 구간의 키프레임 이미지 {n}장이 시간 순서로 주어집니다:\n"
+        f"{listing}\n\n"
+        f"각 이미지에 대해 위 규칙에 따라 한국어 1~2문장 장면 캡션을 작성하세요.\n"
+        f"출력은 반드시 캡션 문자열 {n}개를 이미지 순서대로 담은 JSON 배열 하나여야 합니다. "
+        "다른 설명·마크다운·키 없이 JSON 배열만 출력하세요.\n"
+        '예: ["첫 번째 이미지 캡션.", "두 번째 이미지 캡션."]'
+    )
+
+
 _SUMMARY_RULES = (
     "1. 전사록 전문과 장면 캡션을 참고해 세션에서 실제로 있었던 일을 3~6문장으로 요약하세요.",
     "2. 전사록·캡션에 없는 내용을 지어내지 마세요(사실 기반 — 추측이나 일반화는 피하세요).",

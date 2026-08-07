@@ -393,6 +393,20 @@ class WikiDatabase:
             ).fetchall()
         return [(row[0], row[1], row[2]) for row in rows]
 
+    def load_wiki_documents(self, vault_path: str) -> list[tuple[str, str]]:
+        """볼트 하나의 Markdown 문서를 경로순으로 읽는다."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT file_path, markdown_content
+                FROM wiki_documents
+                WHERE vault_path = %s
+                ORDER BY file_path
+                """,
+                (vault_path,),
+            ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
     def vector_scores(
         self, vault_path: str, item_ids: Sequence[int], query_vector: Sequence[float]
     ) -> dict[int, float]:

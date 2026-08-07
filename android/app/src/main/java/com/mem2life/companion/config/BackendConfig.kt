@@ -35,7 +35,12 @@ data class BackendConfig(
 
     fun sessionEndUrl(sessionId: String): String = "$httpBaseUrl/sessions/$sessionId/end"
 
-    fun recallQueryUrl(): String = "$scheme://$host:$recallPort/recall/query"
+    val recallBaseUrl: String
+        get() = "$scheme://$host:$recallPort"
+
+    fun recallQueryUrl(): String = "$recallBaseUrl/recall/query"
+
+    fun wikiPagesUrl(): String = "$recallBaseUrl/wiki/pages"
 
     companion object {
         /** 앱이 한 번도 설정을 저장한 적 없을 때 쓰는 안전한 기본값(assets 로드 실패 시). */

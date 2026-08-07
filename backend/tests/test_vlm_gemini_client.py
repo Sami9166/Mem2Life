@@ -220,11 +220,53 @@ class TestGeminiVLMCaptioner:
         with pytest.raises(GeminiAPIError, match="비어"):
             captioner.caption_keyframes([keyframe_image], sample_transcript, media_slug="slug")
 
-    def test_multiple_keyframes_each_get_their_own_call(
+    def test_multiple_keyframes_in_one_window_are_batched_into_one_call(
         self, keyframe_image: ProcessedKeyframe, sample_transcript: Transcript
     ) -> None:
+        # 60초 창 안의 두 프레임 → 한 번의 호출(JSON 배열 응답)로 캡션.
         second_keyframe = ProcessedKeyframe(
             timestamp_str="00:10", timestamp_sec=10.0, image_path=keyframe_image.image_path
+        )
+        call_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            return _text_response('["첫 이미지 캡션.", "둘째 이미지 캡션."]')
+
+        captioner = GeminiVLMCaptioner(client=_fake_client(handler))
+        results = captioner.caption_keyframes(
+            [keyframe_image, second_keyframe], sample_transcript, media_slug="slug"
+        )
+
+        assert call_count == 1, "배치는 한 번의 호출이어야 한다"
+        assert [ts_s for ts_s, _e, _t in results] == [5.0, 10.0]
+        assert [text for _s, _e, text in results] == ["첫 이미지 캡션.", "둘째 이미지 캡션."]
+
+    def test_batch_format_error_falls_back_to_per_frame(
+        self, keyframe_image: ProcessedKeyframe, sample_transcript: Transcript
+    ) -> None:
+        # 첫 배치 호출이 JSON 배열이 아니면(형식 오류) 그 배치를 프레임별로 재호출.
+        second_keyframe = ProcessedKeyframe(
+            timestamp_str="00:10", timestamp_sec=10.0, image_path=keyframe_image.image_path
+        )
+        replies = iter(["JSON 아님 그냥 텍스트", "프레임 캡션 A", "프레임 캡션 B"])
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _text_response(next(replies))
+
+        captioner = GeminiVLMCaptioner(client=_fake_client(handler))
+        results = captioner.caption_keyframes(
+            [keyframe_image, second_keyframe], sample_transcript, media_slug="slug"
+        )
+        assert [text for _s, _e, text in results] == ["프레임 캡션 A", "프레임 캡션 B"]
+
+    def test_frames_more_than_a_window_apart_are_separate_batches(
+        self, keyframe_image: ProcessedKeyframe, sample_transcript: Transcript
+    ) -> None:
+        # 90초 떨어진 두 프레임 → 서로 다른 배치(각 1프레임 → 프레임별 호출) = 2회.
+        far = ProcessedKeyframe(
+            timestamp_str="01:35", timestamp_sec=95.0, image_path=keyframe_image.image_path
         )
         call_count = 0
 
@@ -234,12 +276,8 @@ class TestGeminiVLMCaptioner:
             return _text_response(f"캡션 {call_count}")
 
         captioner = GeminiVLMCaptioner(client=_fake_client(handler))
-        results = captioner.caption_keyframes(
-            [keyframe_image, second_keyframe], sample_transcript, media_slug="slug"
-        )
-
+        captioner.caption_keyframes([keyframe_image, far], sample_transcript, media_slug="slug")
         assert call_count == 2
-        assert [text for _s, _e, text in results] == ["캡션 1", "캡션 2"]
 
 
 class TestGeminiLLMSummarizer:
@@ -278,3 +316,42 @@ class TestGeminiLLMSummarizer:
     def test_no_api_key_raises_credential_error(self) -> None:
         with pytest.raises(GeminiCredentialError, match="GEMINI_API_KEY"):
             GeminiLLMSummarizer(env={})
+
+
+def test_batch_by_window_caps_at_max_frames() -> None:
+    from ingest.vlm.gemini_client import _CAPTION_BATCH_MAX_FRAMES, _batch_by_window
+
+    # 같은 창(0~9초) 안에 10프레임 → max_frames(8)에서 나뉘어야 한다.
+    kfs = [
+        ProcessedKeyframe(timestamp_str=f"00:{i:02d}", timestamp_sec=float(i), image_path=Path("x.jpg"))
+        for i in range(10)
+    ]
+    batches = _batch_by_window(kfs, 60.0, _CAPTION_BATCH_MAX_FRAMES)
+    assert [len(b) for b in batches] == [8, 2]
+
+
+def test_batch_by_window_splits_on_time_gap() -> None:
+    from ingest.vlm.gemini_client import _batch_by_window
+
+    kfs = [
+        ProcessedKeyframe(timestamp_str="00:00", timestamp_sec=0.0, image_path=Path("a.jpg")),
+        ProcessedKeyframe(timestamp_str="00:30", timestamp_sec=30.0, image_path=Path("b.jpg")),
+        ProcessedKeyframe(timestamp_str="01:40", timestamp_sec=100.0, image_path=Path("c.jpg")),
+    ]
+    batches = _batch_by_window(kfs, 60.0, 8)
+    # 0·30초는 한 창, 100초는 60초 넘게 떨어져 새 배치.
+    assert [[k.timestamp_sec for k in b] for b in batches] == [[0.0, 30.0], [100.0]]
+
+
+def test_parse_caption_array_rejects_count_mismatch() -> None:
+    from ingest.vlm.gemini_client import _BatchCaptionFormatError, _parse_caption_array
+
+    with pytest.raises(_BatchCaptionFormatError):
+        _parse_caption_array('["하나만"]', expected=2)
+
+
+def test_parse_caption_array_strips_markdown_fence() -> None:
+    from ingest.vlm.gemini_client import _parse_caption_array
+
+    out = _parse_caption_array('```json\n["가", "나"]\n```', expected=2)
+    assert out == ["가", "나"]

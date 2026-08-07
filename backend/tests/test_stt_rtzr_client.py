@@ -24,6 +24,17 @@ from ingest.stt.rtzr_client import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_spk_count_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """os.environ의 RTZR_SPK_COUNT를 제거해 테스트를 격리한다.
+
+    live 테스트 등이 load_dotenv로 사용자 .env(예: RTZR_SPK_COUNT=2)를
+    os.environ에 올리면, env를 명시하지 않은 이 파일의 테스트가 그 값을 읽어
+    "기본 spk_count=0" 가정이 깨진다. 각 테스트 전 이 키를 지워 결정성을 보장한다.
+    """
+    monkeypatch.delenv("RTZR_SPK_COUNT", raising=False)
+
+
 def _make_client(
     handler: Callable[[httpx.Request], httpx.Response],
     **kwargs: object,
@@ -374,3 +385,69 @@ def test_credential_values_never_appear_in_error_messages(wav_file: Path) -> Non
     with pytest.raises(RTZRCredentialError) as exc_info:
         client.transcribe(wav_file)
     assert secret_marker not in str(exc_info.value)
+
+
+def _completed_handler(request: httpx.Request) -> httpx.Response:
+    """인증→제출→완료를 즉시 돌려주는 최소 핸들러(spk_count config 검증용)."""
+    if str(request.url) == AUTH_URL:
+        return _auth_response()
+    if str(request.url) == TRANSCRIBE_URL:
+        return httpx.Response(200, json={"id": "job-1"})
+    if str(request.url).startswith("https://openapi.vito.ai/v1/transcribe/job-1"):
+        return httpx.Response(
+            200,
+            json={
+                "id": "job-1",
+                "status": "completed",
+                "results": {"utterances": [{"start_at": 0, "duration": 1000, "msg": "네", "spk": 0}]},
+            },
+        )
+    raise AssertionError(f"예상치 못한 요청: {request.url}")
+
+
+def test_spk_count_param_flows_to_diarization_config(wav_file: Path) -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return _completed_handler(request)
+
+    _make_client(handler, spk_count=2).transcribe(wav_file)
+    body = calls[1].content.decode("utf-8", errors="ignore")
+    assert '"spk_count": 2' in body
+
+
+def test_spk_count_from_env(wav_file: Path) -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return _completed_handler(request)
+
+    _make_client(handler, env={"RTZR_SPK_COUNT": "3"}).transcribe(wav_file)
+    body = calls[1].content.decode("utf-8", errors="ignore")
+    assert '"spk_count": 3' in body
+
+
+def test_spk_count_param_overrides_env(wav_file: Path) -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return _completed_handler(request)
+
+    _make_client(handler, spk_count=1, env={"RTZR_SPK_COUNT": "9"}).transcribe(wav_file)
+    body = calls[1].content.decode("utf-8", errors="ignore")
+    assert '"spk_count": 1' in body
+
+
+def test_spk_count_defaults_to_zero_when_unset(wav_file: Path) -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return _completed_handler(request)
+
+    _make_client(handler, env={}).transcribe(wav_file)
+    body = calls[1].content.decode("utf-8", errors="ignore")
+    assert '"spk_count": 0' in body

@@ -141,6 +141,8 @@ class RecallPipeline:
         video_requery_provider: str = DEFAULT_VIDEO_REQUERY_PROVIDER,
         database_url: str | None = None,
     ) -> None:
+        # 위키 열람 API(wiki_api)가 볼트 파일을 직접 읽을 때 쓴다.
+        self.vault_dir = Path(vault_dir)
         self.index: VaultIndex | PostgresIndex
         # database_url을 지정했는데 연결 실패로 파일 모드로 대체된 경우에만
         # True. 서버가 오래 떠 있는 동안(`serve`) 지금 어느 모드로 동작
