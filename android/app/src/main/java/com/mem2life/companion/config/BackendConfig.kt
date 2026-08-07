@@ -16,6 +16,10 @@ data class BackendConfig(
     val host: String,
     val port: Int,
     val wsScheme: String,
+    // 질의응답(recall)은 업로드 수신 서버와 별개의 FastAPI(`recall serve`)라 포트가
+    // 다르다. 같은 host 위에서 이 포트로 `POST /recall/query`를 친다. 실 수신 서버가
+    // 두 역할을 한 앱에 합치면 이 값을 [port]와 같게 두면 된다.
+    val recallPort: Int,
 ) {
     val httpBaseUrl: String
         get() = "$scheme://$host:$port"
@@ -31,9 +35,16 @@ data class BackendConfig(
 
     fun sessionEndUrl(sessionId: String): String = "$httpBaseUrl/sessions/$sessionId/end"
 
+    val recallBaseUrl: String
+        get() = "$scheme://$host:$recallPort"
+
+    fun recallQueryUrl(): String = "$recallBaseUrl/recall/query"
+
+    fun wikiPagesUrl(): String = "$recallBaseUrl/wiki/pages"
+
     companion object {
         /** 앱이 한 번도 설정을 저장한 적 없을 때 쓰는 안전한 기본값(assets 로드 실패 시). */
         val FALLBACK =
-            BackendConfig(scheme = "http", host = "10.0.2.2", port = 8000, wsScheme = "ws")
+            BackendConfig(scheme = "http", host = "10.0.2.2", port = 8000, wsScheme = "ws", recallPort = 8100)
     }
 }

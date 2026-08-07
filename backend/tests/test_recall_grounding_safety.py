@@ -18,6 +18,8 @@ from datetime import date
 
 import pytest
 
+from recall.answer.template_generator import TemplateAnswerGenerator
+from recall.fallback.trigger import StubVideoRequeryClient
 from recall.pipeline import RecallPipeline
 
 _TODAY = date(2026, 7, 18)
@@ -26,7 +28,16 @@ _TODAY = date(2026, 7, 18)
 @pytest.fixture(scope="module")
 def pipeline(mock_vault_dir, tmp_path_factory: pytest.TempPathFactory) -> RecallPipeline:
     cache_path = tmp_path_factory.mktemp("recall_grounding_safety_cache") / "cache.json"
-    return RecallPipeline(mock_vault_dir, cache_path=cache_path)
+    # video_requery_client / answer_generator 오프라인 구현 명시 주입 이유는
+    # test_recall_regression_demo.py의 동일 패턴 주석 참고 — module-scope
+    # fixture라 GEMINI_API_KEY 환경 오염에 취약하다.
+    return RecallPipeline(
+        mock_vault_dir,
+        cache_path=cache_path,
+        embedding_provider="hash",
+        answer_generator=TemplateAnswerGenerator(),
+        video_requery_client=StubVideoRequeryClient(),
+    )
 
 
 # ---------------------------------------------------------------------------

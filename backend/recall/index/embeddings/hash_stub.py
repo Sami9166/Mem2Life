@@ -6,11 +6,9 @@
 잡히고, 코사인 유사도로 순위를 매길 수 있어 "벡터 검색" 아키텍처를
 그대로 검증할 수 있다.
 
-실제 서비스 전환 시 `factory.py`의 provider 매핑에 OpenAI/Gemini
-임베딩 클라이언트를 추가하고 기본값만 바꾸면 된다 (`ingest/stt`와 동일한
-교체 패턴). `dim`이 다른 provider로 바꾸면 기존 벡터 인덱스 캐시는
-무효화해야 한다 — `index/store.py`가 dim 불일치를 감지해 자동으로
-재계산한다.
+Gemini API를 쓰지 않는 테스트·오프라인 진단에서만 `--embedding hash`로
+명시해 사용한다. `dim`이 다른 provider로 바꾸면 `index/store.py`가 기존
+캐시를 무효화하고 자동으로 재계산한다.
 """
 
 from __future__ import annotations
@@ -22,7 +20,7 @@ from dataclasses import dataclass, field
 
 from ..tokenize import tokenize
 
-DEFAULT_DIM = 256
+DEFAULT_DIM = 768
 
 
 def _feature_hash(token: str, dim: int) -> tuple[int, int]:
@@ -41,11 +39,11 @@ def _normalize(vector: list[float]) -> list[float]:
 
 @dataclass
 class HashEmbeddingClient:
-    """provider 이름: `"hash"` (기본값, API 키 불필요)."""
+    """provider 이름: `"hash"` (명시적 오프라인용, API 키 불필요)."""
 
     dim: int = field(default=DEFAULT_DIM)
 
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+    def embed(self, texts: Sequence[str], *, task: str = "document") -> list[list[float]]:
         results: list[list[float]] = []
         for text in texts:
             vector = [0.0] * self.dim

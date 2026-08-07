@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 
 from recall.vault.chunking import chunk_documents
-from recall.vault.loader import load_vault_documents
+from recall.vault.loader import load_document, load_vault_documents
 from recall.vault.types import ChunkLevel, DocKind
 
 
@@ -39,6 +39,10 @@ def test_chunk_session_document_produces_all_levels(mock_vault_dir: Path) -> Non
         ChunkLevel.SCENE_CAPTION,
     }
 
+    highlight = next(c for c in chunks if c.level is ChunkLevel.HIGHLIGHT)
+    assert highlight.start_sec == 20.0
+    assert highlight.timestamp_label == "[15:00:20]"
+
 
 def test_transcript_chunks_have_absolute_and_relative_timestamps(mock_vault_dir: Path) -> None:
     docs = load_vault_documents(mock_vault_dir)
@@ -49,6 +53,28 @@ def test_transcript_chunks_have_absolute_and_relative_timestamps(mock_vault_dir:
     # 세션 시작(15:00:00) 기준 상대 초 — fallback 영상 클립 offset 계산용
     assert budget_line.start_sec == 50.0
     assert budget_line.speaker == "민수"
+
+
+def test_generated_relative_timestamp_stays_video_relative(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    path = sessions / "2026-07-17_1500_생성세션.md"
+    path.write_text(
+        """---
+date: 2026-07-17
+time: 15:00-15:03
+participants: ["[[민수]]"]
+video: "video.mp4"
+---
+## 전사록
+
+[00:00:20] 민수: 생성된 Markdown은 영상 기준 시각을 쓴다.
+""",
+        encoding="utf-8",
+    )
+
+    chunks = chunk_documents([load_document(path, tmp_path)])
+    assert chunks[0].start_sec == 20.0
 
 
 def test_book_title_never_appears_in_any_indexable_text(mock_vault_dir: Path) -> None:

@@ -1,8 +1,9 @@
 """`uv run mem2life-ingest <영상경로>` 로 실행하는 기록 파이프라인 CLI.
 
 영상 파일 하나만 넘기면 오디오 추출 → STT(RTZR, 인증 정보 없으면 자동 스텁
-폴백) → Obsidian 세션 md 생성까지 API 키 없이도 끝까지 실행된다. 인증 정보가
-있어도 API 호출 자체가 실패하면(네트워크 문제, RTZR 서버 오류 등)
+폴백) → Obsidian 세션 md 생성까지 API 키 없이도 끝까지 실행된다. PostgreSQL
+검색 색인까지 만들 때는 Gemini API 키가 필요하다(`--embedding hash` 예외).
+인증 정보가 있어도 STT 호출 자체가 실패하면(네트워크 문제, RTZR 서버 오류 등)
 `ingest/pipeline.py`가 같은 스텁으로 대체해 세션 md 생성까지는 항상
 완료되도록 한다(경고 메시지 출력).
 """
@@ -10,11 +11,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from recall.index.embeddings.factory import DEFAULT_PROVIDER as DEFAULT_EMBEDDING_PROVIDER
 
 from .pipeline import run_ingest_pipeline
 from .stt.factory import DEFAULT_PROVIDER, available_providers
@@ -82,6 +86,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="파이프라인 종료 후 추출된 .wav 오디오 파일을 삭제한다 (기본: 보존).",
     )
+    parser.add_argument(
+        "--database-url",
+        default=os.environ.get("MEM2LIFE_DATABASE_URL"),
+        help="PostgreSQL DSN. 생략하면 기존 파일 모드로 실행한다.",
+    )
+    parser.add_argument(
+        "--embedding",
+        dest="embedding_provider",
+        default=DEFAULT_EMBEDDING_PROVIDER,
+        choices=("gemini", "hash"),
+        help=f"DB 검색 임베딩 provider (기본값: {DEFAULT_EMBEDDING_PROVIDER})",
+    )
     return parser
 
 
@@ -105,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
             participants=args.participants,
             stt_provider=args.stt_provider,
             keep_audio=not args.delete_audio,
+            database_url=args.database_url,
+            embedding_provider=args.embedding_provider,
         )
     except (OSError, ValueError, RuntimeError) as exc:
         # OSError는 FileNotFoundError(입력 영상 없음)뿐 아니라 PermissionError,
@@ -121,6 +139,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[완료] 전사록 발화 수  : {len(result.transcript.segments)}")
     print(f"[완료] 감지된 화자     : {', '.join(result.transcript.speakers)}")
     print(f"[완료] 세션 md 생성    : {result.session_md_path}")
+    print(f"[완료] 추출된 키프레임 : {len(result.visual.processed_keyframes)}개")
+    if result.session_id:
+        print(f"[완료] DB 세션 ID      : {result.session_id}")
+        print(f"[완료] 전사록 원본     : {result.transcript_path}")
+    elif result.database_fallback:
+        # 중간 stderr 경고만으로는 스크롤에 묻혀 놓치기 쉬우므로, 마지막
+        # 요약 줄에도 눈에 띄게 다시 남긴다 — DB 저장이 조용히 빠졌다는
+        # 사실을 실행 끝까지 보지 않아도 알 수 있게 하는 것이 목적.
+        print("[경고] DB 저장 실패 — 이번 세션은 파일 모드로만 저장됨 (위 경고 참고)")
     return 0
 
 

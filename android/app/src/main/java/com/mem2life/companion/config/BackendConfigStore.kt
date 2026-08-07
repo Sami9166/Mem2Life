@@ -10,6 +10,7 @@ private const val KEY_SCHEME = "scheme"
 private const val KEY_HOST = "host"
 private const val KEY_PORT = "port"
 private const val KEY_WS_SCHEME = "ws_scheme"
+private const val KEY_RECALL_PORT = "recall_port"
 
 /**
  * [BackendConfig]의 로드/저장을 담당한다.
@@ -28,7 +29,16 @@ class BackendConfigStore(private val context: Context) {
         val host = prefs.getString(KEY_HOST, null) ?: default.host
         val port = if (prefs.contains(KEY_PORT)) prefs.getInt(KEY_PORT, default.port) else default.port
         val wsScheme = prefs.getString(KEY_WS_SCHEME, null) ?: default.wsScheme
-        return BackendConfig(scheme = scheme, host = host, port = port, wsScheme = wsScheme)
+        val recallPort =
+            if (prefs.contains(KEY_RECALL_PORT)) prefs.getInt(KEY_RECALL_PORT, default.recallPort)
+            else default.recallPort
+        return BackendConfig(
+            scheme = scheme,
+            host = host,
+            port = port,
+            wsScheme = wsScheme,
+            recallPort = recallPort,
+        )
     }
 
     fun save(config: BackendConfig) {
@@ -37,6 +47,7 @@ class BackendConfigStore(private val context: Context) {
             .putString(KEY_HOST, config.host)
             .putInt(KEY_PORT, config.port)
             .putString(KEY_WS_SCHEME, config.wsScheme)
+            .putInt(KEY_RECALL_PORT, config.recallPort)
             .apply()
     }
 
@@ -49,6 +60,7 @@ class BackendConfigStore(private val context: Context) {
                     host = json.optString("host", BackendConfig.FALLBACK.host),
                     port = json.optInt("port", BackendConfig.FALLBACK.port),
                     wsScheme = json.optString("wsScheme", BackendConfig.FALLBACK.wsScheme),
+                    recallPort = json.optInt("recallPort", BackendConfig.FALLBACK.recallPort),
                 )
             }
         } catch (e: Exception) {

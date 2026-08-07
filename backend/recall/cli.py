@@ -9,9 +9,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import date
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 from .index.embeddings.factory import DEFAULT_PROVIDER as DEFAULT_EMBEDDING_PROVIDER
 from .pipeline import RecallPipeline
@@ -19,6 +22,7 @@ from .pipeline import RecallPipeline
 # backend/recall/cli.py -> parents[0]=recall, [1]=backend, [2]=Mem2Life
 _DEFAULT_VAULT = Path(__file__).resolve().parents[2] / "vault"
 _DEFAULT_CACHE = Path(__file__).resolve().parents[1] / ".recall_index_cache.json"
+_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
 def _parse_date(value: str) -> date:
@@ -55,12 +59,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_EMBEDDING_PROVIDER,
         help=f"임베딩 provider (기본값: {DEFAULT_EMBEDDING_PROVIDER})",
     )
+    ask.add_argument(
+        "--database-url",
+        default=os.environ.get("MEM2LIFE_DATABASE_URL"),
+        help="PostgreSQL DSN. 지정하면 pgvector 검색을 사용한다.",
+    )
 
     serve = subparsers.add_parser("serve", help="FastAPI 서버를 uvicorn으로 실행한다")
     serve.add_argument("--vault", type=Path, default=_DEFAULT_VAULT)
     serve.add_argument("--cache", type=Path, default=_DEFAULT_CACHE)
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8100)
+    serve.add_argument(
+        "--embedding",
+        dest="embedding_provider",
+        default=DEFAULT_EMBEDDING_PROVIDER,
+        help=f"임베딩 provider (기본값: {DEFAULT_EMBEDDING_PROVIDER})",
+    )
+    serve.add_argument(
+        "--database-url",
+        default=os.environ.get("MEM2LIFE_DATABASE_URL"),
+        help="PostgreSQL DSN. 지정하면 pgvector 검색을 사용한다.",
+    )
 
     return parser
 
@@ -70,16 +90,28 @@ def _run_ask(args: argparse.Namespace) -> int:
         print(f"[실패] 볼트 디렉토리를 찾을 수 없습니다: {args.vault}", file=sys.stderr)
         return 1
 
-    pipeline = RecallPipeline(args.vault, cache_path=args.cache, embedding_provider=args.embedding_provider)
+    pipeline = RecallPipeline(
+        args.vault,
+        cache_path=args.cache,
+        embedding_provider=args.embedding_provider,
+        database_url=args.database_url,
+    )
     reference_date = args.reference_date or date.today()
     result = pipeline.answer_question(args.question, reference_date=reference_date)
 
+    glass = result.glass
     print(f"[질문] {args.question}")
     print(f"[분류] {result.question_type.value}")
     print(f"[답변] {result.final_text}")
-    print(f"[TTS ] {result.tts_text}")
+    # 글래스에 실제로 나갈 형태 — 스피커로 읽힐 문장과 480x480 화면에 올라갈
+    # 내용을 그대로 미리 보여준다(데모 리허설에서 어색한 문구를 미리 잡으려고).
+    print(f"[글래스 음성] {glass.tts_text}")
+    print(f"[글래스 화면] {glass.status_label} | {glass.display_text}")
+    for e in glass.evidence:
+        link = f" → {e.video_link}" if e.video_link else ""
+        print(f"             · {e.label}{link}")
     if result.citations:
-        print("[근거]")
+        print("[근거 전체]")
         for c in result.citations:
             video = f" ({c.video_link})" if c.video_link else ""
             print(f"  - {c.label}{video}: {c.excerpt}")
@@ -102,13 +134,19 @@ def _run_serve(args: argparse.Namespace) -> int:
         print(f"[실패] 볼트 디렉토리를 찾을 수 없습니다: {args.vault}", file=sys.stderr)
         return 1
 
-    pipeline = RecallPipeline(args.vault, cache_path=args.cache)
+    pipeline = RecallPipeline(
+        args.vault,
+        cache_path=args.cache,
+        embedding_provider=args.embedding_provider,
+        database_url=args.database_url,
+    )
     app = create_app(pipeline)
     uvicorn.run(app, host=args.host, port=args.port)
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv(_ENV_FILE, override=False)
     parser = build_parser()
     args = parser.parse_args(argv)
 

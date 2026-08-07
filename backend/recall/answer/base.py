@@ -70,10 +70,20 @@ class AnswerResult:
     "기록에 없음"류 문구를 반환했다는 뜻이다(자기평가/fallback 판단은 별도
     모듈이 하지만, 답변 생성 단계에서도 근거가 아예 없으면 여기서 막는다)."""
 
-    text: str
+    text: str  # 인용 표기("(근거: ...)")까지 붙은 전체 문자열 — 로그/CLI 표시용
     citations: tuple[Citation, ...]
     grounded: bool
     evidence: tuple[Evidence, ...]
+    # 인용 표기를 뺀 답변 본문. TTS로 읽거나 좁은 글래스 화면에 띄울 때 쓴다 —
+    # 인용은 이미 `citations`에 구조화돼 있으므로 문장 안에 다시 넣으면 음성으로
+    # 읽힐 때 소음이 된다(`recall/present/glass.py` 참고). 생략하면 `text`를
+    # 그대로 쓴다(인용을 아예 붙이지 않는 구현체 대비).
+    body: str = ""
+
+    @property
+    def spoken_body(self) -> str:
+        """음성/좁은 화면에 쓸 본문. `body`가 없으면 `text`로 대체된다."""
+        return self.body or self.text
 
 
 @runtime_checkable

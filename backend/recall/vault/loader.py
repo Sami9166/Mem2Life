@@ -71,10 +71,9 @@ def _derive_title(path: Path, kind: DocKind, frontmatter: dict[str, object]) -> 
     return stem  # people/topics: 파일명이 곧 이름
 
 
-def load_document(path: Path, vault_dir: Path) -> VaultDocument:
-    """md 파일 하나를 읽어 `VaultDocument`로 변환한다."""
+def parse_document(path: Path, vault_dir: Path, raw_text: str) -> VaultDocument:
+    """파일 또는 DB에서 읽은 Markdown을 `VaultDocument`로 변환한다."""
     kind = _doc_kind_for(path, vault_dir)
-    raw_text = path.read_text(encoding="utf-8")
     frontmatter, _ = split_frontmatter(raw_text)
 
     doc_date: date_type | None
@@ -101,6 +100,11 @@ def load_document(path: Path, vault_dir: Path) -> VaultDocument:
         date=doc_date,
         title=title,
     )
+
+
+def load_document(path: Path, vault_dir: Path) -> VaultDocument:
+    """md 파일 하나를 읽어 `VaultDocument`로 변환한다."""
+    return parse_document(path, vault_dir, path.read_text(encoding="utf-8"))
 
 
 def load_vault_documents(vault_dir: Path) -> list[VaultDocument]:

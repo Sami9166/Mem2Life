@@ -124,5 +124,6 @@ def test_stub_video_requery_client_never_fabricates_an_answer() -> None:
     )
     decision = decide_fallback(QuestionType.VISUAL, answer)
     result = client.requery("책 제목이 뭐야?", decision.clip_targets)
-    assert "STUB" in result
-    assert "구현되지 않았습니다" in result
+    # 스텁은 절대 근거를 만들어냈다고 주장하지 않는다.
+    assert result.grounded is False
+    assert "미수행" in result.answer_text

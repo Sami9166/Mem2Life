@@ -1,14 +1,18 @@
-"""fallback 트리거 판정 (fallback 라우팅 ③단계의 "판정" 부분만).
+"""fallback 트리거 판정 + 영상 재조회 클라이언트 계약.
 
 `decide_fallback()`이 이 모듈의 핵심이다: 질문 분류 + 자기평가 결과를 받아
 "영상 재조회가 필요한가"를 결정하고, 필요하다면 어느 영상의 어느 구간
 (`VideoClipTarget`)을 넘겨야 하는지까지 계산한다.
 
-**범위 제한 (작업 지시대로)**: 실제 Gemini 영상 입력 재조회 호출은 여기
-구현하지 않는다. `VideoRequeryClient` Protocol과 스텁 구현
-(`StubVideoRequeryClient`)만 두어, 트리거 판정 이후의 흐름(영상 클립을
-어디로 보내야 하는지)까지는 배선해 두고 실제 API 연동은 다음 단계로
-남긴다.
+트리거 이후의 실제 영상 재조회는 `VideoRequeryClient` Protocol 뒤에 숨긴다.
+실제 구현은 `gemini_requery.GeminiVideoRequeryClient`(Gemini 영상 입력)이고,
+`StubVideoRequeryClient`는 GEMINI_API_KEY가 없거나 오프라인일 때의 폴백이다
+(STT/임베딩과 동일한 provider 교체 패턴 — `fallback/factory.py` 참고).
+
+재조회 결과는 단순 문자열이 아니라 `VideoRequeryResult`로 돌려준다: 영상에서
+실제로 답을 찾았는지(`grounded`)를 파이프라인이 알아야 "재답변"으로 승격할지,
+아니면 "기록에 없음"류 정직한 실패로 남길지 결정할 수 있기 때문이다
+(CLAUDE.md: 답을 지어내지 않는다).
 """
 
 from __future__ import annotations
@@ -90,43 +94,67 @@ def decide_fallback(question_type: QuestionType, answer: AnswerResult) -> Fallba
         question_type=question_type,
         verdict=verdict,
         clip_targets=_build_clip_targets(answer),
-        note=(
-            "텍스트 근거가 불충분합니다 — 해당 구간 영상을 Gemini(영상 입력)로 "
-            "재조회해야 합니다. 이번 단계는 트리거 판정까지만 구현하며, 실제 "
-            "재조회는 `VideoRequeryClient`의 스텁 구현으로 남겨둔다."
-        ),
+        note="텍스트 근거가 불충분합니다 — 해당 구간 영상을 Gemini(영상 입력)로 재조회합니다.",
     )
+
+
+@dataclass(frozen=True, slots=True)
+class VideoRequeryResult:
+    """영상 재조회 1회의 결과.
+
+    `grounded=True`면 영상에서 실제로 답의 근거를 찾았다는 뜻이고, 그때만
+    `answer_text`가 사용자에게 보여줄 "재답변"으로 승격된다. `grounded=False`면
+    (근거를 못 찾음 / API 키 없음 / 재조회 실패) 답을 지어내지 않고 정직한 실패
+    문구를 담는다 — `error`에 원인을 남긴다(있으면).
+    """
+
+    answer_text: str
+    grounded: bool
+    clips_used: tuple[VideoClipTarget, ...] = ()
+    error: str | None = None
 
 
 @runtime_checkable
 class VideoRequeryClient(Protocol):
     """영상 클립을 Gemini(영상 입력)에 넣어 재조회하는 클라이언트.
 
-    실제 구현은 다음 단계 작업이다 — 지금은 `StubVideoRequeryClient`만
-    등록돼 있고, 이후 실제 Gemini 클라이언트를 추가할 때도 이 Protocol만
+    실제 구현은 `gemini_requery.GeminiVideoRequeryClient`이고, 이 Protocol만
     만족시키면 `pipeline.py` 호출부는 그대로 둘 수 있다(STT/임베딩과 동일한
-    교체 패턴).
+    교체 패턴). 재조회가 실패해도 예외를 밖으로 던지지 않고
+    `VideoRequeryResult(grounded=False, ...)`로 정직하게 돌려주는 것이 계약이다
+    — fallback은 이미 "1차 답변이 불충분하다"는 신호라, 여기서 죽으면 사용자에게
+    아무 답도 못 준다.
     """
 
-    def requery(self, question: str, clips: Sequence[VideoClipTarget]) -> str: ...
+    def requery(self, question: str, clips: Sequence[VideoClipTarget]) -> VideoRequeryResult: ...
 
 
 @dataclass
 class StubVideoRequeryClient:
-    """미구현 스텁. 실제 영상 재조회 대신 "무엇이 필요한지" 설명하는
-    플레이스홀더 문자열을 반환한다 — 데모에서 fallback 경로가 끊기지 않고
-    끝까지 흐르도록 하되, 있지도 않은 사실(예: 책 제목)을 지어내지 않는다.
+    """오프라인/무키(無key) 폴백. 실제 영상 재조회 대신 "무엇이 필요한지"만
+    설명하는 결과를 돌려준다 — 데모에서 fallback 경로가 끊기지 않고 끝까지
+    흐르도록 하되, 있지도 않은 사실(예: 책 제목)을 절대 지어내지 않는다
+    (`grounded=False` 고정). GEMINI_API_KEY가 없을 때 `fallback/factory.py`가
+    `GeminiVideoRequeryClient` 대신 이걸 반환한다.
     """
 
-    def requery(self, question: str, clips: Sequence[VideoClipTarget]) -> str:
+    def requery(self, question: str, clips: Sequence[VideoClipTarget]) -> VideoRequeryResult:
         if not clips:
-            return (
-                "[STUB] 재조회할 영상 구간을 찾지 못했습니다 — 원본 영상이 "
-                "볼트에 기록돼 있는지 확인이 필요합니다."
+            return VideoRequeryResult(
+                answer_text=(
+                    "[영상 재조회 미수행] 재조회할 영상 구간을 찾지 못했습니다 — 원본 영상이 "
+                    "볼트에 기록돼 있는지 확인이 필요합니다."
+                ),
+                grounded=False,
+                clips_used=(),
             )
         clip_desc = "; ".join(f"{c.video_path}@{c.start_sec:.0f}-{c.end_sec:.0f}s" for c in clips)
-        return (
-            "[STUB] 실제 Gemini 영상 재조회는 아직 구현되지 않았습니다 "
-            "(recall-dev 다음 단계 작업). 다음 구간을 Gemini에 영상 입력으로 "
-            f"넣어 재조회해야 합니다: {clip_desc}"
+        return VideoRequeryResult(
+            answer_text=(
+                "[영상 재조회 미수행] GEMINI_API_KEY가 설정돼 있지 않아 실제 Gemini 영상 "
+                "재조회를 수행하지 못했습니다. 다음 구간을 Gemini에 영상 입력으로 넣어 "
+                f"재조회해야 합니다: {clip_desc}"
+            ),
+            grounded=False,
+            clips_used=tuple(clips),
         )

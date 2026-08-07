@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f7f5">
+    <title>Mem2Life Wiki</title>
+    <link rel="stylesheet" href="/assets/styles.css?v=20260805-1">
+  </head>
+  <body data-main-view="graph" data-mobile-view="graph">
+    <header class="topbar">
+      <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="사이드바 접기" aria-expanded="true">☰</button>
+      <a class="brand" href="/" aria-label="Mem2Life Wiki 홈">Mem2Life Vault</a>
+      <div class="top-actions">
+        <div class="theme-switch" aria-label="화면 테마">
+          <button type="button" data-theme-choice="light" class="active">☀ Light</button>
+          <button type="button" data-theme-choice="dark">☾ Dark</button>
+        </div>
+        <button id="refresh-button" class="icon-button" type="button" aria-label="문서 새로고침">↻</button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar" aria-label="Wiki 탐색">
+        <div class="sidebar-heading">
+          <div class="sidebar-switch" aria-label="사이드바 내용">
+            <button type="button" data-sidebar-kind="all" class="active">파일</button>
+            <button type="button" data-sidebar-kind="session">세션</button>
+          </div>
+          <span class="sidebar-actions" aria-hidden="true">＋ ⋮</span>
+        </div>
+        <label class="search">
+          <span aria-hidden="true">⌕</span>
+          <span class="sr-only">Wiki 검색</span>
+          <input id="search-input" type="search" placeholder="파일 검색…" autocomplete="off">
+          <kbd>Ctrl K</kbd>
+        </label>
+        <div class="vault-root"><span>⌄</span><strong>Mem2Life</strong><span id="document-count" aria-live="polite"></span></div>
+        <div id="document-list" class="document-list"></div>
+      </aside>
+
+      <section class="main-pane">
+        <nav class="view-tabs" aria-label="Wiki 보기 전환">
+          <button type="button" data-main-view="graph" class="active"><span aria-hidden="true">⌘</span> Graph view</button>
+          <div id="reader-tab" class="reader-tab" hidden>
+            <button type="button" data-main-view="reader">
+              <span aria-hidden="true">▤</span><span id="reader-tab-title" class="reader-tab-title"></span>
+            </button>
+            <button id="reader-tab-close" class="reader-tab-close" type="button" aria-label="문서 닫기">×</button>
+          </div>
+        </nav>
+
+        <main class="reader" id="reader" tabindex="-1">
+          <div id="reader-empty" class="empty-state">
+            <span class="empty-mark" aria-hidden="true">◌</span>
+            <h1>기억을 불러오는 중입니다</h1>
+            <p>로컬 Vault의 문서를 읽고 있습니다.</p>
+          </div>
+          <article id="document-view" hidden>
+            <header class="document-header">
+              <div id="document-meta" class="document-meta"></div>
+              <h1 id="document-title"></h1>
+              <p id="document-path" class="document-path"></p>
+              <div id="connections" class="connections"></div>
+            </header>
+            <div id="markdown-body" class="markdown-body"></div>
+          </article>
+        </main>
+
+        <section class="graph-panel" aria-label="문서 연결 그래프">
+          <div class="graph-title"><span>Graph view</span><span id="graph-count" class="graph-count"></span></div>
+          <svg id="graph" viewBox="0 0 1000 650" role="img" aria-label="Wiki 문서 연결 그래프"></svg>
+          <aside id="graph-settings" class="graph-settings" aria-label="그래프 설정">
+            <button id="graph-settings-toggle" class="graph-settings-toggle" type="button" aria-controls="graph-settings" aria-expanded="true" title="그래프 설정 접기">−</button>
+            <details open>
+              <summary>Filters</summary>
+              <div class="settings-body kind-toggles">
+                <label><input type="checkbox" data-kind="session" checked> 세션</label>
+                <label><input type="checkbox" data-kind="people" checked> 사람</label>
+                <label><input type="checkbox" data-kind="topic" checked> 주제</label>
+                <label><input type="checkbox" data-kind="daily" checked> 일별</label>
+              </div>
+            </details>
+            <details open>
+              <summary>Groups</summary>
+              <div class="settings-body group-list">
+                <span><i class="session-dot"></i>세션</span><span><i class="people-dot"></i>사람</span>
+                <span><i class="topic-dot"></i>주제</span><span><i class="daily-dot"></i>일별</span>
+              </div>
+            </details>
+            <details open>
+              <summary>Display</summary>
+              <div class="settings-body"><label><input id="labels-toggle" type="checkbox" checked> 이름 표시</label></div>
+            </details>
+            <details><summary>Forces</summary><div class="settings-body">연결 강도 자동</div></details>
+          </aside>
+          <div class="graph-legend" aria-hidden="true">
+            <span><i class="session-dot"></i>세션</span><span><i class="people-dot"></i>사람</span>
+            <span><i class="topic-dot"></i>주제</span><span><i class="daily-dot"></i>일별</span>
+          </div>
+        </section>
+      </section>
+    </div>
+
+    <nav class="mobile-tabs" aria-label="Wiki 화면 전환">
+      <button type="button" data-view="list">☰<span>목록</span></button>
+      <button type="button" data-view="reader">▤<span>문서</span></button>
+      <button type="button" data-view="graph" class="active">⌘<span>그래프</span></button>
+    </nav>
+
+    <template id="error-template">
+      <div class="empty-state">
+        <span class="empty-mark" aria-hidden="true">!</span>
+        <h1>Wiki를 불러오지 못했습니다</h1>
+        <p>Recall 서버가 실행 중인지 확인해 주세요.</p>
+        <button class="primary-button" type="button">다시 시도</button>
+      </div>
+    </template>
+
+    <script src="/assets/app.js?v=20260805-1" defer></script>
+  </body>
+</html>

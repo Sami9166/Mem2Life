@@ -78,6 +78,27 @@ def test_build_session_markdown_explicit_end_time() -> None:
     assert "time: 10:30-11:05" in md
 
 
+def test_build_session_markdown_renders_db_content_and_paths() -> None:
+    dt = datetime(2026, 7, 17, 10, 30)
+    md = build_session_markdown(
+        session_start=dt,
+        participants=["민수"],
+        video_path="videos/session.mp4",
+        transcript=_sample_transcript(),
+        session_id="550e8400-e29b-41d4-a716-446655440000",
+        transcript_path="data/sessions/550e8400/transcript.json",
+        summary="[[민수]]와 제주도 여행 계획을 논의했다.",
+        highlights=[(20.0, "제주도 여행 출발일을 확정했다.")],
+        captions=[(25.0, "테이블 위에 제주도 여행 책자가 놓여 있다.")],
+    )
+
+    assert 'session_id: "550e8400-e29b-41d4-a716-446655440000"' in md
+    assert 'transcript: "data/sessions/550e8400/transcript.json"' in md
+    assert "[[민수]]와 제주도 여행 계획을 논의했다." in md
+    assert "- [00:00:20] 제주도 여행 출발일을 확정했다." in md
+    assert "- [00:00:25] 테이블 위에 제주도 여행 책자가 놓여 있다." in md
+
+
 def test_write_session_md_creates_expected_path(tmp_path: Path) -> None:
     dt = datetime(2026, 7, 16, 15, 0)
     path = write_session_md(

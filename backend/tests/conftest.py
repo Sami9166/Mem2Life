@@ -40,21 +40,25 @@ def mock_vault_today() -> date:
 
 
 @pytest.fixture(autouse=True)
-def _no_ambient_rtzr_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    """모든 테스트에서 RTZR 인증 관련 환경변수를 확실히 비운다.
+def _no_ambient_api_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """모든 테스트에서 외부 API(STT/VLM/LLM/영상재조회) 인증 환경변수를 확실히 비운다.
 
-    `ingest/cli.py`의 `load_dotenv()`가 실제 `backend/.env`(RTZR 실 크레덴셜
-    포함)를 로드할 수 있으므로, 이 autouse 픽스처 없이는 test_cli.py의 e2e
+    `ingest/cli.py`/`recall/cli.py`의 `load_dotenv()`가 실제 `backend/.env`
+    (실 크레덴셜 포함)를 로드할 수 있으므로, 이 autouse 픽스처 없이는 e2e
     테스트가 먼저 실행된 뒤 같은 프로세스 안의 다른 테스트(예:
-    test_stt_stubs.py::test_get_stt_client_factory)가 실제 RTZR 클라이언트를
-    골라 네트워크를 태울 위험이 있다. 이 스위트는 어떤 테스트도 실제
-    네트워크를 타면 안 되므로 매 테스트 시작 시 무조건 비운다 — 실제 RTZR
-    API 응답을 검증하는 테스트는 httpx.MockTransport로 네트워크를 완전히
-    대체하거나(`test_stt_rtzr_client.py`), RTZR_LIVE_TEST=1로 명시적으로
-    옵트인하는 별도 수동 테스트여야 한다.
+    test_stt_stubs.py::test_get_stt_client_factory, test_pipeline.py의 VLM/LLM
+    자동 생성 경로)가 실제 클라이언트를 골라 네트워크를 태울 위험이 있다. 이
+    스위트는 어떤 테스트도 실제 네트워크를 타면 안 되므로 매 테스트 시작 시
+    무조건 비운다:
+        - RTZR: `test_stt_rtzr_client.py`는 httpx.MockTransport로 대체.
+        - Gemini(VLM 캡션/LLM 요약): `test_vlm_gemini_client.py`는
+          httpx.MockTransport로 대체.
+        - Gemini(영상 재조회): fake client 주입으로 대체.
+    실제 API를 검증하는 라이브 테스트는 각각 RTZR_LIVE_TEST=1 /
+    GEMINI_LIVE_TEST=1로 옵트인하고 자체적으로 `.env`를 다시 로드한다.
     """
-    monkeypatch.delenv("RTZR_CLIENT_ID", raising=False)
-    monkeypatch.delenv("RTZR_CLIENT_SECRET", raising=False)
+    for key in ("RTZR_CLIENT_ID", "RTZR_CLIENT_SECRET", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
 
 
 def _ffmpeg_available() -> bool:
@@ -92,6 +96,45 @@ def dummy_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         pytest.fail(f"더미 영상 생성 실패:\n{result.stderr}")
+    return video_path
+
+
+@pytest.fixture(scope="session")
+def dummy_video_with_scene_change(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """앞 1.5초는 파란 화면, 뒤 1.5초는 빨간 화면인 더미 mp4(10fps, 무음).
+
+    `ingest/visual.py`의 사건 경계 탐지를 검증하려고 t=1.5s 부근에 뚜렷한
+    장면 전환을 하나 심어둔 결정적(deterministic) 픽스처다.
+    """
+    if not _ffmpeg_available():
+        pytest.skip("ffmpeg/ffprobe가 설치돼 있지 않습니다 (brew install ffmpeg)")
+
+    out_dir = tmp_path_factory.mktemp("dummy_video_scene_change")
+    video_path = out_dir / "dummy_session_scene_change.mp4"
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=blue:s=320x240:d=1.5:r=10",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=red:s=320x240:d=1.5:r=10",
+        "-filter_complex",
+        "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+        "-map",
+        "[v]",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        str(video_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"장면 전환 더미 영상 생성 실패:\n{result.stderr}")
     return video_path
 
 

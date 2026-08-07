@@ -90,21 +90,20 @@ def coarse_to_fine_search(
     # 2단계: session(middle) — 세션 요약/주요 순간 + 엔티티 페이지
     # ------------------------------------------------------------------
     # 두 풀을 따로 검색한다(합쳐서 한 번에 top_k를 자르지 않는다): people/topics
-    # 페이지는 세션 로그를 산문으로 재서술한 것이라 BM25/벡터 점수가 종종
-    # 짧은 "주요 순간" 불릿보다 높게 나온다. 하나의 후보 풀로 합쳐 top_k를
-    # 자르면 정작 타임스탬프가 붙은 세션 근거가 밀려날 수 있으므로, 세션
-    # 레벨 근거와 엔티티 근거를 독립적으로 top_k개씩 확보한다.
+    # 페이지는 세션 로그를 산문으로 재서술한 것이라 세션 요약/주요 순간과 별개로
+    # 라우팅 신호를 제공한다. 두 종류를 독립적으로 top_k개씩 확보한다.
     date_filter = narrowed_dates if narrowed_dates else None
     session_level_idx = index.indices_for(
         levels={ChunkLevel.SESSION_SUMMARY, ChunkLevel.HIGHLIGHT}, dates=date_filter
     )
     entity_idx = index.indices_for(levels={ChunkLevel.ENTITY})
 
-    session_evidence = index.search(question, indices=session_level_idx, top_k=top_k_session)
+    session_candidates = index.search(question, indices=session_level_idx, top_k=len(session_level_idx))
+    session_evidence = session_candidates[:top_k_session]
     entity_evidence = index.search(question, indices=entity_idx, top_k=top_k_session)
 
     chosen_sessions: list[Path] = []
-    for ev in session_evidence:
+    for ev in session_candidates:
         if ev.chunk.doc_kind is DocKind.SESSION and ev.chunk.doc_path not in chosen_sessions:
             chosen_sessions.append(ev.chunk.doc_path)
         if len(chosen_sessions) >= max_chosen_sessions:
@@ -114,7 +113,9 @@ def coarse_to_fine_search(
         # 세션 레벨에서 아무것도 못 골랐으면(예: 엔티티 청크만 히트) 좁혀진 날짜
         # 범위 내 모든 세션으로 fine 검색 범위를 넓힌다 — 데모 스케일에서는
         # 세션 수가 적어 비용이 크지 않다.
-        fallback_idx = index.indices_for(levels={ChunkLevel.SESSION_SUMMARY}, dates=date_filter)
+        fallback_idx = index.indices_for(
+            levels={ChunkLevel.SESSION_SUMMARY, ChunkLevel.HIGHLIGHT}, dates=date_filter
+        )
         chosen_sessions = sorted(
             {index.chunks[i].doc_path for i in fallback_idx}, key=lambda p: p.as_posix()
         )[:max_chosen_sessions]
@@ -131,9 +132,7 @@ def coarse_to_fine_search(
     # 최종 답변·인용 근거는 타임스탬프가 붙는 daily/세션/전사록/캡션을 항상
     # 먼저 채우고, people/topics(엔티티) 근거는 남는 자리만 보조로 채운다.
     # 점수만으로 한 번에 정렬해 자르면 엔티티 산문(시각 정보 없음)이 종종
-    # 짧은 "주요 순간" 불릿보다 근소하게 높은 점수를 받아 타임스탬프 있는
-    # 근거를 밀어낼 수 있다 — "모든 답변에 근거 타임스탬프 포함" 원칙을
-    # 지키려면 엔티티는 항상 보조 역할이어야 한다.
+    # 세션·전사록·캡션 근거를 밀어낼 수 있으므로 엔티티는 보조 역할로 둔다.
     timestamped_pool = _dedup_by_chunk_id(daily_evidence + session_evidence + fine_evidence)
     combined = list(timestamped_pool[:combined_top_k])
     if len(combined) < combined_top_k:
