@@ -29,7 +29,11 @@ from .base import Transcript, TranscriptSegment
 
 DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 _ENV_KEYS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
-_MAX_OUTPUT_TOKENS = 1024
+# gemini-flash-latest 등 thinking 모델은 내부 사고(thoughts)에 출력 토큰을 먼저 소진한 뒤
+# 본문을 뱉는다. 실측상 사고에 ~1000토큰이 들어가 1024 상한에선 JSON을 출력하기 전에
+# MAX_TOKENS로 잘렸다. thinking_budget=0은 이 모델 alias에서 400을 반환하므로(미지원),
+# 대신 상한을 넉넉히 둬 사고+JSON(라벨 매핑은 수십 토큰)이 함께 들어가도록 한다.
+_MAX_OUTPUT_TOKENS = 8192
 _TEMPERATURE = 0.0  # 결정적 교정이 목적 — 창의성 불필요.
 _MAX_ERROR_CHARS = 300
 

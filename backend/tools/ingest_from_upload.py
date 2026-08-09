@@ -96,7 +96,12 @@ def main() -> int:
         "--vault", type=Path, default=_DEFAULT_VAULT, help=f"볼트 경로 (기본값: {_DEFAULT_VAULT})"
     )
     parser.add_argument("--title", default=None, help="세션 제목 (생략 시 세션ID)")
-    parser.add_argument("--stt", default=DEFAULT_PROVIDER, help=f"STT provider (기본값: {DEFAULT_PROVIDER})")
+    parser.add_argument(
+        "--stt",
+        default=None,
+        help="STT provider (rtzr|gemini|clova). 생략 시 .env의 STT_PROVIDER, "
+        "그것도 없으면 rtzr. 예: --stt gemini",
+    )
     parser.add_argument(
         "--no-speaker-merge",
         action="store_true",
@@ -122,6 +127,10 @@ def main() -> int:
 
     load_dotenv(".env")
 
+    # STT provider 결정은 .env 로드 이후에 해야 STT_PROVIDER가 반영된다(import 시점엔
+    # 아직 .env가 안 읽혔다). 우선순위: --stt 명시 > .env/셸의 STT_PROVIDER > rtzr.
+    stt_provider = args.stt or os.environ.get("STT_PROVIDER", DEFAULT_PROVIDER).strip().lower() or "rtzr"
+
     session_dir: Path = args.session_dir
     if not session_dir.is_dir():
         print(f"[실패] 세션 디렉터리를 찾을 수 없습니다: {session_dir}", file=sys.stderr)
@@ -141,8 +150,8 @@ def main() -> int:
     print(f"[1/6] WAV 생성: {wav.name} ({wav.stat().st_size / 1e6:.1f}MB)")
 
     # 2. STT
-    client = get_stt_client(args.stt)
-    print(f"[2/6] STT({type(client).__name__}) 전사 중...")
+    client = get_stt_client(stt_provider)
+    print(f"[2/6] STT({type(client).__name__}, provider={stt_provider}) 전사 중...")
     transcript = client.transcribe(wav)
     print(
         f"      → provider={transcript.provider}, 발화 {len(transcript.segments)}개, "

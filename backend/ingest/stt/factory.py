@@ -33,11 +33,15 @@ from collections.abc import Callable
 
 from .base import SpeechToTextClient
 from .clova_stub import ClovaStubClient
+from .gemini_client import GeminiSttClient, GeminiSttCredentialError
 from .rtzr_client import RTZRClient, RTZRCredentialError
 from .rtzr_stub import RTZRStubClient
+from .soniox_client import SonioxCredentialError, SonioxSttClient
 
 _ENV_KEY_CLIENT_ID = "RTZR_CLIENT_ID"
 _ENV_KEY_CLIENT_SECRET = "RTZR_CLIENT_SECRET"
+_ENV_KEYS_GEMINI = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+_ENV_KEY_SONIOX = "SONIOX_API_KEY"
 
 
 def _rtzr_credentials_present() -> bool:
@@ -69,12 +73,59 @@ def _build_rtzr_client() -> SpeechToTextClient:
         return RTZRStubClient()
 
 
+def _build_gemini_stt_client() -> SpeechToTextClient:
+    """Gemini 오디오 전사 클라이언트를 만든다. 인증 정보가 없으면 스텁으로 대체한다.
+
+    `_build_rtzr_client`과 동일한 생성 시점 폴백 — GEMINI_API_KEY가 없으면
+    (테스트/CI 포함) RTZR 스텁(더미 전사록)을 반환해 파이프라인이 키 없이도
+    끝까지 실행된다.
+    """
+    if not any(os.environ.get(k) for k in _ENV_KEYS_GEMINI):
+        print(
+            "[안내] GEMINI_API_KEY가 설정돼 있지 않아 STT 스텁(더미 전사록)으로 "
+            "동작합니다. Gemini 전사를 쓰려면 backend/.env에 GEMINI_API_KEY를 "
+            "설정하세요 (.env.example 참고).",
+            file=sys.stderr,
+        )
+        return RTZRStubClient()
+    try:
+        return GeminiSttClient()
+    except GeminiSttCredentialError as exc:
+        print(f"[안내] {exc} 스텁으로 대체합니다.", file=sys.stderr)
+        return RTZRStubClient()
+
+
+def _build_soniox_client() -> SpeechToTextClient:
+    """Soniox 전사 클라이언트를 만든다. 인증 정보가 없으면 스텁으로 대체한다.
+
+    다른 provider와 동일한 생성 시점 폴백 — SONIOX_API_KEY가 없으면(테스트/CI 포함)
+    RTZR 스텁(더미 전사록)을 반환해 파이프라인이 키 없이도 끝까지 실행된다.
+    """
+    if not os.environ.get(_ENV_KEY_SONIOX):
+        print(
+            "[안내] SONIOX_API_KEY가 설정돼 있지 않아 STT 스텁(더미 전사록)으로 "
+            "동작합니다. Soniox 전사를 쓰려면 backend/.env에 SONIOX_API_KEY를 "
+            "설정하세요 (.env.example 참고).",
+            file=sys.stderr,
+        )
+        return RTZRStubClient()
+    try:
+        return SonioxSttClient()
+    except SonioxCredentialError as exc:
+        print(f"[안내] {exc} 스텁으로 대체합니다.", file=sys.stderr)
+        return RTZRStubClient()
+
+
 _PROVIDERS: dict[str, Callable[[], SpeechToTextClient]] = {
     "rtzr": _build_rtzr_client,
+    "gemini": _build_gemini_stt_client,
+    "soniox": _build_soniox_client,
     "clova": ClovaStubClient,
 }
 
-DEFAULT_PROVIDER = "rtzr"  # 기술조사_의사결정.md 기준 1순위
+# STT_PROVIDER 환경변수로 기본 provider를 바꿀 수 있다(rtzr|gemini|clova). 자동
+# 파이프라인(mock-backend → 글루)은 --stt를 명시하지 않으므로 이 환경변수가 토글점이다.
+DEFAULT_PROVIDER = os.environ.get("STT_PROVIDER", "rtzr").strip().lower() or "rtzr"
 
 
 def available_providers() -> list[str]:
